@@ -425,6 +425,22 @@ export class YamlUtils {
   }
 
   /**
+   * 兼容 URL-safe Base64 的解码：SSR 等链接使用 '-_' 字母表且常省略填充符，先归一化为标准 Base64 再解码
+   * @param b64 Base64/Base64URL 字符串
+   * @returns 解码出的 UTF-8 字符串，失败返回 null
+   */
+  private static decodeBase64UrlSafe(b64: string): string | null {
+    try {
+      const normalized = b64.replaceAll('-', '+').replaceAll('_', '/');
+      const pad = normalized.length % 4 === 0 ? '' : '='.repeat(4 - normalized.length % 4);
+      const base64Helper = new util.Base64Helper();
+      return util.TextDecoder.create('utf-8').decodeToString(base64Helper.decodeSync(normalized + pad));
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /**
    * 尝试将 Base64/Universal 订阅解码并转换为 Clash 可用的 YAML
    * @param rawContent 原始响应文本（可能是 Base64 编码，也可能直接是 vmess:// 等明文）
    * @returns 转换后的 Clash YAML 字符串，如果转换失败返回 null
@@ -435,23 +451,22 @@ export class YamlUtils {
       const trimmed = rawContent.trim();
 
       // 如果已经是明文协议头，不需要 Base64 解码
-      if (trimmed.startsWith('vmess://') || trimmed.startsWith('ss://') || trimmed.startsWith('trojan://')) {
+      if (trimmed.startsWith('vmess://') || trimmed.startsWith('ss://') || trimmed.startsWith('trojan://') ||
+        trimmed.startsWith('ssr://')) {
         decodedStr = trimmed;
       } else {
         // 尝试 Base64 解码
-        try {
-          const base64Helper = new util.Base64Helper();
-          const decodedUint8Array = base64Helper.decodeSync(trimmed);
-          const decoder = util.TextDecoder.create('utf-8');
-          decodedStr = decoder.decodeToString(decodedUint8Array);
-        } catch (e) {
+        const decoded = YamlUtils.decodeBase64UrlSafe(trimmed);
+        if (decoded === null) {
           // 解码失败说明不是 Base64 格式
           return null;
         }
+        decodedStr = decoded;
       }
 
       // 验证解码后的内容是否包含通用协议头
-      if (!decodedStr.includes('vmess://') && !decodedStr.includes('ss://') && !decodedStr.includes('trojan://')) {
+      if (!decodedStr.includes('vmess://') && !decodedStr.includes('ss://') && !decodedStr.includes('trojan://') &&
+        !decodedStr.includes('ssr://')) {
         return null;
       }
 
@@ -526,13 +541,96 @@ export class YamlUtils {
           // TODO: 完善 Trojan 解析
           proxyList.push({ name: name, type: "trojan", server: "0.0.0.0", port: 1, password: "password" });
           proxyNames.push(name);
+        } else if (trimLine.startsWith('ssr://')) {
+          try {
+            // ssr:// 之后是整段 URL-safe Base64：host:port:protocol:method:obfs:base64url(password)/?参数
+            const decoded = YamlUtils.decodeBase64UrlSafe(trimLine.substring('ssr://'.length));
+            if (!decoded) {
+              console.warn("解析单条 ssr 链接失败：Base64 解码失败");
+              continue;
+            }
+            const slashIdx = decoded.indexOf('/?');
+            const mainPart = slashIdx >= 0 ? decoded.substring(0, slashIdx) : decoded;
+            const queryPart = slashIdx >= 0 ? decoded.substring(slashIdx + 2) : '';
+            // 从右往左取 5 段，剩余合并为 server，兼容 IPv6 地址含冒号的情况
+            const segments = mainPart.split(':');
+            if (segments.length < 6) {
+              console.warn(`解析单条 ssr 链接失败：字段不足 ${mainPart}`);
+              continue;
+            }
+            const passwordB64 = segments[segments.length - 1];
+            const obfs = segments[segments.length - 2];
+            const method = segments[segments.length - 3];
+            const protocol = segments[segments.length - 4];
+            const port = parseInt(segments[segments.length - 5]);
+            const server = segments.slice(0, segments.length - 5).join(':');
+            const password = YamlUtils.decodeBase64UrlSafe(passwordB64) ?? passwordB64;
+
+            // 查询参数中 remarks/obfsparam/protoparam/group 均为 URL-safe Base64
+            const params: Record<string, string> = {};
+            for (const kv of queryPart.split('&')) {
+              const eqIdx = kv.indexOf('=');
+              if (eqIdx > 0) {
+                params[kv.substring(0, eqIdx)] = kv.substring(eqIdx + 1);
+              }
+            }
+            const remarks = params['remarks'] ? YamlUtils.decodeBase64UrlSafe(params['remarks']) : null;
+            let name = remarks || `SSR-Node-${proxyNames.length}`;
+            while (proxyNames.includes(name)) {
+              name = `${name}#`;
+            }
+
+            const proxy: Record<string, Object> = {
+              name: name,
+              type: "ssr",
+              server: server,
+              port: isNaN(port) ? 443 : port,
+              cipher: method,
+              password: password,
+              protocol: protocol,
+              obfs: obfs,
+              udp: true
+            };
+            const protoParam = params['protoparam'] ? YamlUtils.decodeBase64UrlSafe(params['protoparam']) : null;
+            const obfsParam = params['obfsparam'] ? YamlUtils.decodeBase64UrlSafe(params['obfsparam']) : null;
+            if (protoParam) {
+              proxy["protocol-param"] = protoParam;
+            }
+            if (obfsParam) {
+              proxy["obfs-param"] = obfsParam;
+            }
+
+            proxyList.push(proxy);
+            proxyNames.push(name);
+          } catch (e) {
+            console.warn("解析单条 ssr 链接失败", e);
+          }
         }
       }
 
       if (proxyNames.length === 0) return null;
 
       // 构建 Clash YAML 对象
+      // 分流规则：局域网/国内直连，其余走代理。内核 overrideRules 仅在首条规则为
+      // 2 字段 "MATCH,xxx" 时才注入空格分隔的 IP 检测域名（会破坏配置），此处首条为
+      // 4 字段 IP-CIDR，内核与 injectDnsFields 的 guard 注入都会自然跳过。
+      // dns 段：TUN 模式下系统 DNS 指向内核自身(172.19.0.2)，无 dns 配置时 DIRECT 出站的
+      // 本地解析会陷入环路/被污染，国内站点全部打不开。fake-ip + 国内 DoH 保证国内域名
+      // 由国内 DNS 解析后直连，国外域名交给节点远端解析。
       const clashDoc = {
+        dns: {
+          enable: true,
+          ipv6: true,
+          "enhanced-mode": "fake-ip",
+          "fake-ip-range": "198.18.0.1/16",
+          "fake-ip-filter": ["+.lan", "+.local", "localhost.ptlogin2.qq.com"],
+          "default-nameserver": ["223.5.5.5", "119.29.29.29", "1.12.12.12"],
+          "proxy-server-nameserver": ["https://223.5.5.5/dns-query", "https://1.12.12.12/dns-query"],
+          nameserver: ["https://223.5.5.5/dns-query", "https://1.12.12.12/dns-query"],
+          "nameserver-policy": {
+            "geosite:cn": ["https://223.5.5.5/dns-query", "https://1.12.12.12/dns-query"]
+          }
+        },
         proxies: proxyList,
         "proxy-groups": [
           {
@@ -541,7 +639,15 @@ export class YamlUtils {
             proxies: proxyNames
           }
         ],
-        rules: ["MATCH,PROXY"]
+        rules: [
+          "IP-CIDR,10.0.0.0/8,DIRECT,no-resolve",
+          "IP-CIDR,172.16.0.0/12,DIRECT,no-resolve",
+          "IP-CIDR,192.168.0.0/16,DIRECT,no-resolve",
+          "IP-CIDR,127.0.0.0/8,DIRECT,no-resolve",
+          "GEOSITE,cn,DIRECT",
+          "GEOIP,CN,DIRECT,no-resolve",
+          "MATCH,PROXY"
+        ]
       };
 
       // 序列化为字符串
