@@ -34,11 +34,7 @@
         "exported": true,
         "backgroundModes": [
           // 长时任务类型的配置项
-          // 数据传输
-          "dataTransfer",
-          // 定位
-          "location",
-          // 任务保持
+          // 任务保持(仅平板/2in1生效)
           "taskKeeping"
         ],
         "skills": [
@@ -94,42 +90,12 @@
         "name": "ohos.permission.VIBRATE"
       },
       {
-        // 长时后台
+        // 长时任务(任务保持,仅平板/2in1)
         "name": "ohos.permission.KEEP_BACKGROUND_RUNNING"
       },
       {
         // PC窗口透明色
         'name': "ohos.permission.SET_WINDOW_TRANSPARENT"
-      },
-      {
-        "name": "ohos.permission.LOCATION",
-        "reason": "$string:permission_reason_MICROPHONE",
-        "usedScene": {
-          "abilities": [
-            "EntryAbility"
-          ],
-          "when": "inuse"
-        }
-      },
-      {
-        "name": "ohos.permission.LOCATION_IN_BACKGROUND",
-        "reason": "$string:permission_reason_MICROPHONE",
-        "usedScene": {
-          "abilities": [
-            "EntryAbility"
-          ],
-          "when": "inuse"
-        }
-      },
-      {
-        "name": "ohos.permission.APPROXIMATELY_LOCATION",
-        "reason": "$string:permission_reason_MICROPHONE",
-        "usedScene": {
-          "abilities": [
-            "EntryAbility"
-          ],
-          "when": "inuse"
-        }
       },
     ],
     "extensionAbilities": [

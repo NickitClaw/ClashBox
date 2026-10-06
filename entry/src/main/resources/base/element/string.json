@@ -202,7 +202,7 @@
     },
     {
       "name": "BackgrounderSubtitle",
-      "value": "模拟长时任务运行"
+      "value": "任务保持（仅平板及电脑）"
     },
     {
       "name": "WipeDataSubtitle",
@@ -358,7 +358,7 @@
     },
     {
       "name": "External_Control_Subtitle",
-      "value": "通过9090端口控制Clash内核"
+      "value": "仅监听本机127.0.0.1:9090，已自动启用访问密钥"
     },
     {
       "name": "OverwriteDNS",
@@ -973,44 +973,12 @@
       "value": "频道"
     },
     {
-      "name": "simulate_locate",
-      "value": "模拟定位"
-    },
-    {
       "name": "keep_task",
       "value": "任务保持"
     },
     {
-      "name": "simulate_locate_subtitle",
-      "value": "通过模拟定位以保留程序后台"
-    },
-    {
-      "name": "simulate_pip",
-      "value": "模拟画中画"
-    },
-    {
-      "name": "simulate_pip_subtitle",
-      "value": "通过启用空白画中画以保留程序后台"
-    },
-    {
-      "name": "simulate_down",
-      "value": "模拟下载"
-    },
-    {
-      "name": "simulate_down_subtitle",
-      "value": "通过模拟下载以保留程序后台"
-    },
-    {
-      "name": "backgrounder_tips_2",
-      "value": " ⑥平板及电脑建议使用任务保持"
-    },
-    {
       "name": "backgrounder_tips",
-      "value": "提示：\n ①开启后会导致应用耗电量增加，并且开关模拟定位后请重启软件；\n ②目前已知从自由多窗模式无法主动发起画中画窗口且画中画开启后系统会锁90帧；\n ③模拟下载通知不能删除，否则模拟下载会失效；\n ④模拟下载通知可能会被系统杀死通知而导致模拟下载功能失效，非必要建议使用模拟定位或者画中画功能；\n "
-    },
-    {
-      "name": "backgrounder_tips_3",
-      "value": "⑤如果使用模拟定位，请授权允许位置权限并同时保持位置开关处于启用状态\n"
+      "value": "提示：任务保持仅支持平板及电脑设备。VPN 服务由系统扩展进程运行，应用退至后台不影响代理运行。"
     },
     {
       "name": "notice_main_switch",
@@ -1039,22 +1007,6 @@
     {
       "name": "time_reminder_subtitle",
       "value": "长时间未关闭VPN时提醒"
-    },
-    {
-      "name": "simulate_locate_closed_tips",
-      "value": "是否关闭？"
-    },
-    {
-      "name": "simulate_locate_closed_content_text",
-      "value": "关闭此选项可能会导致ClashBox无法在后台长时间运行"
-    },
-    {
-      "name": "simulate_down_open_tips",
-      "value": "是否开启？"
-    },
-    {
-      "name": "simulate_down_open_content_text",
-      "value": "建议使用“模拟定位”来保持应用的后台长时运行，本选项可能会导致电量消耗更快"
     },
     {
       "name": "open",
@@ -1611,10 +1563,6 @@
     {
       "name": "start_prompt",
       "value": "请检查配置文件是否导入，代理节点是否加载..."
-    },
-    {
-      "name": "permission_reason_MICROPHONE",
-      "value": "长时任务模拟定位"
     },
     {
       "name": "bypass_private_route_address",

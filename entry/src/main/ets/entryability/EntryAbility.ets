@@ -5,7 +5,6 @@ import { BusinessError } from '@kit.BasicServicesKit';
 import ClashViewModel from './ClashViewModel';
 import { AppConfig, AppState, ClashCore } from './AppState';
 import { EventHub, EventKey } from '../common/EventHub';
-import { PipManager } from '../common/utils/PipManager';
 import { ClashConfig, SocketStubService } from 'proxy_core';
 import { deviceInfo } from '@kit.BasicServicesKit';
 import { url } from '@kit.ArkTS';
@@ -279,9 +278,6 @@ export default class EntryAbility extends UIAbility {
 
         // 获取分享的包名信息(初始)
         await this.getShareData(this.want!);
-
-        // 通过主窗口UIContext创建typeNode节点
-        PipManager.getInstance().makeTypeNode(this.uiContext)
 
       } catch (err) {
         console.error(`Failed to obtain the main window. Cause code: ${err.code}, message: ${err.message}`);

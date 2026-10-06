@@ -68,7 +68,6 @@ struct Kernel {
         // 前台模式
         this.appConfig.clashCore = ClashCore.ClashMeta
         ClashViewModel.ChangeCore(ClashCore.ClashMeta)
-        // this.uiConfig.backgroundPiPModel = false
         // promptAction.showToast({message: $r('app.string.restart_tips'), duration: 2000 })
         // setTimeout(() => {
         this.promptAction.showToast({message: "应用即将退出，请重新打开", duration: 2000 })

@@ -124,14 +124,8 @@ export class UIConfig {
   isRequestNotification: boolean = false
   // 后台运行启用变量
   Enablebackgrounder: boolean = false
-  // 模拟定位启用变量
-  backgroundLocateModel: boolean = true
-  // 后台保持变量
+  // 后台保持变量(任务保持, 仅平板/2in1生效)
   backgroundKeepTask: boolean = false
-  // 模拟下载启用变量
-  backgroundDownModel: boolean = false
-  // 模拟画中画启用变量
-  backgroundPiPModel: boolean = false
   /* 主页小卡片相关 */
   // 分流模式小卡片  平移属性参数
   translateY: number | string = '-100%'
@@ -192,7 +186,7 @@ export function getPackageInfo() {
 @Observed
 // use @StorageLink('appConfig')
 export class AppState {
-  static externalController = "0.0.0.0:9090"
+  static externalController = "127.0.0.1:9090"
   static globalUA = "clash.meta/1.19.5"
   static versionName = ''
   static versionCode = 1006056

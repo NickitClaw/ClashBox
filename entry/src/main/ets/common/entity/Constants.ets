@@ -1,6 +1,7 @@
 import { ClashConfig, Dns, DnsEnhancedMode, LogLevel, RouteMode,
   Sniff,
   TunStack } from "proxy_core";
+import { util } from "@kit.ArkTS";
 import { CustomThemeName } from "xb_components/src/main/ets/utils/AppThemeManager";
 import { AppConfig, AppState, copy } from "../../entryability/AppState";
 import { BreakpointState } from "../breakpoint/breakpointsystem";
@@ -427,9 +428,14 @@ export const ListOverwriteBasicData = (clashConfig: ClashConfig, appConfig: AppC
     new ConfigItemData($r('sys.symbol.order_play'), 'tcp-concurrent', $r('app.string.TCP_Concurrency'), '', '',  2, ).bindClashConfig(clashConfig),
     new ConfigItemData($r('sys.symbol.selector'), 'external-controller', $r('app.string.External_Control'), $r('app.string.External_Control_Subtitle'), '',  2).bind<boolean>(clashConfig["external-controller"] != "", (result)=>{
       if(result){
+        // 仅绑定本机回环地址, 并生成随机访问密钥
         clashConfig["external-controller"] = AppState.externalController
+        if (!clashConfig.secret) {
+          clashConfig.secret = util.generateRandomUUID()
+        }
       }else{
         clashConfig["external-controller"] = ""
+        clashConfig.secret = ""
       }
 
     }),

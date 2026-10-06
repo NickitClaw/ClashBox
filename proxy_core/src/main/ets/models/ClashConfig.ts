@@ -142,7 +142,7 @@ export class  ClashConfig {
   "mixed-port"?: number = defaultMixedPort;
   "geodata-loader": string = "memconservative" // standard,
   authentication?: string[];
-  "allow-lan": boolean = true;
+  "allow-lan": boolean = false;
   "bind-address"?: string;
   mode?: ProxyMode = ProxyMode.Rule;
   "log-level"?: LogLevel = LogLevel.Info;

@@ -34,8 +34,6 @@ import { ChangeLanguage } from '../common/utils/ChangeLanguageUtil'
 import { ConfigData, HomeCardInfo, TabBuild } from '../common/entity/PageArgumentEntity'
 import { customAnimationUtil } from '../common/utils/Animation'
 import { DisclaimerCustomDialog, icon_tertiary, theRowCustomDialog } from '../components/Common/Common'
-import { PipManager } from '../common/utils/PipManager'
-import { deviceInfo } from '@kit.BasicServicesKit'
 import { CrashPage } from '../components/Start/CrashPage'
 import { UpdateInfo } from '../common/utils/CheckUpdateUtil'
 import { fileUri, picker, ReadOptions } from '@kit.CoreFileKit'
@@ -43,7 +41,6 @@ import { fileIo as fs } from '@kit.CoreFileKit';
 import { number2Time, timestampToDateTime } from '../common/utils/TimeConvertUtil'
 import { PXSecScreen } from './PXSecScreen'
 import { getResourceString } from '../common/utils/ResourceStringUtil'
-import BackgroundLocateService from '../common/utils/BackgroundLocateService'
 import { ConvertedUnit } from '../common/utils/DataUnitConvertUtils'
 import { WelcomeUserAgreement } from '../components/Start/WelcomePage'
 import { i18n } from '@kit.LocalizationKit'
@@ -84,7 +81,6 @@ import {
   Xb_TabTitleFontSize
 } from 'xb_components'
 import { Xb_GoToWeb } from 'xb_components/src/main/ets/utils/JumpTo'
-import BackgroundDownService from '../common/utils/BackgroundDownService'
 import { notificationManager } from '@kit.NotificationKit'
 import { BusinessError } from '@kit.BasicServicesKit'
 import { cardManager } from '../common/utils/CardManageUtil'
@@ -178,7 +174,7 @@ struct Index {
   // 是否开启`Index`页面的前景模糊
   @Provide('isEnableIndexForegroundBlur') isEnableIndexForegroundBlur: boolean = false
   // 代理启动变量
-  @Provide @Watch('ShowPipChange') proxyEnabled: boolean = false
+  @Provide proxyEnabled: boolean = false
   // 前台判断变量
   @StorageProp('ForwardState') isForward: boolean = true
   // 初始化是否完成
@@ -795,12 +791,8 @@ struct Index {
       EventHub.sendEvent(EventKey.EnabledNotice, true)
     }
 
-    // 检查后台运行全局变量的状态
-    if (this.uiConfig.backgroundLocateModel || this.uiConfig.backgroundDownModel || this.uiConfig.backgroundPiPModel || this.uiConfig.backgroundKeepTask) {
-      this.uiConfig.Enablebackgrounder = true
-    } else {
-      this.uiConfig.Enablebackgrounder = false
-    }
+    // 检查后台运行全局变量的状态(仅任务保持)
+    this.uiConfig.Enablebackgrounder = this.uiConfig.backgroundKeepTask
 
     // 分享包名
     const localStorage = this.getUIContext().getSharedLocalStorage()
@@ -933,8 +925,6 @@ struct Index {
                 hilog.error(0xFF00, 'Index-Notice', '用户拒绝授权')
                 // 关闭总通知
                 this.uiConfig.Enablednotice = false
-                // 关闭模拟下载
-                this.uiConfig.backgroundDownModel = false
                 // 标记已经请求过授权
                 this.uiConfig.isRequestNotification = true
                 this.promptAction.showToast({ message: $r('app.string.enable_notice_failed') })
@@ -1004,16 +994,8 @@ struct Index {
           }
         }, 1500)
       }
-      // 发布模拟下载通知
-      if (this.uiConfig.backgroundDownModel && this.uiConfig.Enablednotice) {
-        BackgroundDownService.start(this.getUIContext().getHostContext()!)
-      }
-      // 发布模拟定位通知
-      if (this.uiConfig.backgroundLocateModel && !this.uiConfig.backgroundKeepTask && this.uiConfig.Enablednotice) {
-        BackgroundLocateService.start(this.getUIContext().getHostContext()!)
-      }
       // 发布任务保持通知
-      if (!this.uiConfig.backgroundLocateModel && this.uiConfig.backgroundKeepTask && this.uiConfig.Enablednotice) {
+      if (this.uiConfig.backgroundKeepTask && this.uiConfig.Enablednotice) {
         Xb_BackgroundRunning.start(this.getUIContext().getHostContext()!)
       }
       // 发布实况窗
@@ -1026,19 +1008,8 @@ struct Index {
     })
     // 停止Clash后
     EventHub.on(EventKey.StopedClash, () => {
-      // 停止模拟下载
-      if (this.uiConfig.backgroundDownModel) {
-        console.log(`BackgroundDownService 即将执行模拟下载停止`)
-        BackgroundDownService.stop(this.context)
-      }
-      // 停止模拟定位
-      if (this.uiConfig.backgroundLocateModel) {
-        console.log(`BackgroundLocateService 即将执行模拟定位停止`)
-        BackgroundLocateService.stop(this.context)
-      }
       // 停止任务保持
       if (this.uiConfig.backgroundKeepTask) {
-        console.log(`BackgroundLocateService 即将执行任务保持停止`)
         Xb_BackgroundRunning.stop(this.context)
       }
       clearInterval(this.trafficJob)
@@ -1180,8 +1151,6 @@ struct Index {
     }
     // 纪录软件关闭时间
     this.uiConfig.useTime = new Date().getTime()
-    // 解注册画中画生命周期及状态回调
-    PipManager.getInstance().unregisterPipStateChangeListener()
     this.unRegisterEvent()
     // 解绑listener中注册的回调函数
     // this.deviceHeightListener.off('change');
@@ -1209,6 +1178,13 @@ struct Index {
   async updateData() {
     if (this.clashConfig.tun && this.clashConfig.tun['tun-ip']) {
       this.clashConfig.tun['tun-ip'] = '172.19.0.1/30'
+    }
+    // 外部控制器安全迁移: 全网卡绑定改本机回环, 并补生成访问密钥
+    if (this.clashConfig['external-controller'] === '0.0.0.0:9090') {
+      this.clashConfig['external-controller'] = AppState.externalController
+    }
+    if (this.clashConfig['external-controller'] && !this.clashConfig.secret) {
+      this.clashConfig.secret = util.generateRandomUUID()
     }
     const type = getJsonArrayType(this.uiConfig.isShowHomeCard)
     if (type === 'boolean') {
@@ -1340,25 +1316,6 @@ struct Index {
     this.proxyGroups.refresh()
   }
 
-  /**
-   * 画中画根据代理启动和后台按钮监听是否开启
-   */
-  ShowPipChange() {
-    if (deviceInfo.deviceType === 'tablet') {
-      PipManager.getInstance().updateContentSize(80, 30)
-    }
-    if (this.uiConfig.backgroundPiPModel && this.proxyEnabled) {
-      // 创建画中画控制器
-      PipManager.getInstance().init(this.context)
-      // 禁用自动启用
-      PipManager.getInstance().setAutoStart(true)
-      hilog.info(0xFF00, "PipTag", "代理启用状态： %{public}s", this.proxyEnabled)
-      hilog.info(0xFF00, "PipTag", "画中画启用状态： %{public}s", this.uiConfig.backgroundPiPModel)
-    } else {
-      PipManager.getInstance().setAutoStart(false)
-    }
-  }
-
   onPageShow(): void {
     hilog.info(0xFF00, "TimertestTag", "#onPageShow")
     hilog.info(0xFF00, "PoptestTag", "startPop: %{public}d", this.uiConfig.ShowStartPop)
@@ -1369,9 +1326,7 @@ struct Index {
     }
     this.proxyEnabled = ClashViewModel.vpnStarted
     console.log(`HomeCard 前后台状态：${this.isForward}`)
-    this.ShowPipChange()
     this.initLanguage()
-    PipManager.getInstance().stopPip()
     hilog.info(0x1000, componentName, `#aboutToAppear#Language 用户选择语言：${this.uiConfig.userLanguage}`)
     hilog.info(0x1000, componentName,
       `#aboutToAppear#Language 当前语言文本：${getResourceString(this.currentLanguage, this)}`)
@@ -1398,16 +1353,12 @@ struct Index {
   }
 
   onPageHide(): void {
-    PipManager.getInstance().setAutoStart(true)
     hilog.info(0xFF00, "TimertestTag", "#onPageHide")
     if (this.proxyEnabled) {
       this.thePauseTime = new Date().getTime()
       hilog.info(0xFF00, "TimertestTag", "暂停的时刻： %{public}d", this.thePauseTime)
     }
     console.log(`HomeCard 前后台状态：${this.isForward}`)
-    hilog.info(0xFF00, "PipTag", "代理启用状态： %{public}s", this.proxyEnabled)
-    hilog.info(0xFF00, "PipTag", "画中画启用状态： %{public}s", this.uiConfig.backgroundPiPModel)
-    this.ShowPipChange()
     holdingHandleUtil.stop()
   }
 

@@ -207,7 +207,7 @@ struct Backup {
     this.user = await Xb_KVdbUtil.getData('webdav_user') as string ?? ''
     this.password = await Xb_KVdbUtil.getData('webdav_password') as string ?? ''
     this.server_address = await Xb_KVdbUtil.getData('webdav_server_address') as string ?? ''
-    console.debug(`WebDav 配置信息：user: ${this.user}, password: ${this.password}, server: ${this.server_address}`)
+    console.debug(`WebDav 配置信息：user: ${this.user}, password: ***, server: ${this.server_address}`)
   }
 
   getBackupSubtitle(): ResourceStr {
@@ -544,7 +544,7 @@ export struct CloudBackup {
     await Xb_KVdbUtil.putData('webdav_server_address', this.server_address)
     await Xb_KVdbUtil.putData('webdav_password', this.password)
     await Xb_KVdbUtil.putData('webdav_user', this.user)
-    console.log(`WebDav 保存的配置信息：user: ${this.user}, password: ${this.password}, server: ${this.server_address}`)
+    console.log(`WebDav 保存的配置信息：user: ${this.user}, password: ***, server: ${this.server_address}`)
   }
 
   connect() {
