@@ -9,7 +9,7 @@ import { Xb_GetResourceString, Xb_NotificationUtils } from "xb_components";
 import { notificationManager } from "@kit.NotificationKit";
 import { findAutoUpdateTargets, isProfileUpdateDue } from "./AutoUpdateFilter";
 
-/** 订阅自动更新延迟任务的固定 workId：重复 startWork 同一 workId 即更新任务 */
+/** 订阅自动更新延迟任务的固定 workId，更新前取消已注册任务。 */
 const AUTO_UPDATE_WORK_ID: number = 1001
 /**
  * WorkScheduler 循环任务的最小循环间隔：20 分钟。
@@ -34,6 +34,7 @@ export class ConfigAutoUpdateService {
   private isUpdating: boolean = false;
   /** 需要自动更新的配置（前台检查用） */
   private autoUpdateProfiles: Profile[] = [];
+  private registrationQueue: Promise<void> = Promise.resolve();
 
   initContext(context: Context): void {
     this.context = context;
@@ -61,7 +62,7 @@ export class ConfigAutoUpdateService {
    */
   async stop(): Promise<void> {
     hilog.warn(0xFF00, "ConfigAutoUpdateService", "停止配置自动更新服务");
-    this.cancelWork();
+    await this.queueRegistration(() => this.cancelWork());
     hilog.info(0xFF00, "ConfigAutoUpdateService", "配置自动更新服务已停止");
   }
 
@@ -89,44 +90,49 @@ export class ConfigAutoUpdateService {
    * 按当前订阅勾选情况注册/更新/停止 WorkScheduler 延迟任务。
    * 约束：NETWORK_TYPE_ANY + 不限充电状态 + 循环间隔取用户配置与系统最小间隔（20 分钟）的较大值。
    */
-  private async refreshWorkRegistration(): Promise<void> {
+  private queueRegistration(work: () => Promise<void>): Promise<void> {
+    const pending = this.registrationQueue.then(work);
+    this.registrationQueue = pending.catch(() => {});
+    return pending;
+  }
+
+  private refreshWorkRegistration(): Promise<void> {
+    return this.queueRegistration(() => this.updateWorkRegistration());
+  }
+
+  private async updateWorkRegistration(): Promise<void> {
     const profiles = await ClashViewModel.getProfiles();
     const targets = findAutoUpdateTargets(profiles);
     if (targets.length == 0) {
       hilog.info(0xFF00, "ConfigAutoUpdateService", "没有勾选自动更新的订阅，停止延迟任务");
-      this.cancelWork();
+      await this.cancelWork();
       return;
     }
     // 找出更新频率最快的配置的毫秒值
-    const updateIntervalArray: number[] = targets.map((profile: Profile) => {
+    const updateIntervalArray: number[] = [];
+    for (const profile of targets) {
       // 小于1分钟的重置为默认值并更新一次数据库
       if (profile.autoUpdateDuration < DEFAULT_TIMEOUT) {
         profile.autoUpdateDuration = DEFAULT_TIMEOUT; // 默认1分钟
-        ClashViewModel.updateProfile(profile);
+        await ClashViewModel.updateProfile(profile);
       }
-      return profile.autoUpdateDuration;
-    })
+      updateIntervalArray.push(profile.autoUpdateDuration);
+    }
     // 循环间隔取用户配置与系统最小间隔（20 分钟）的较大值
     const userInterval: number = Math.min(...updateIntervalArray)
     const repeatCycleTime = Math.max(userInterval, MIN_WORK_INTERVAL_MS)
-    const bundleName = this.context?.applicationInfo.name ?? ''
+    const bundleName = this.requireBundleName()
     const workInfo: workScheduler.WorkInfo = {
       workId: AUTO_UPDATE_WORK_ID,
       bundleName: bundleName,
       abilityName: WORK_ABILITY_NAME,
       networkType: workScheduler.NetworkType.NETWORK_TYPE_ANY,
-      isCharging: false, // 充电状态不限
       isRepeat: true,
       repeatCycleTime: repeatCycleTime,
       isPersisted: true // 重启后恢复任务
     }
-    try {
-      // 先取消旧任务再注册，保证 repeatCycleTime 变更生效
-      workScheduler.stopWork(workInfo, true);
-    } catch (e) {
-      // 任务不存在时 stopWork 抛错属正常路径
-      hilog.debug(0xFF00, "ConfigAutoUpdateService", `取消旧延迟任务(可能不存在): ${(e as BusinessError).code}`)
-    }
+    // 使用系统返回的完整条件取消旧任务，不用新条件或缺少条件的 WorkInfo。
+    await this.cancelWork();
     try {
       workScheduler.startWork(workInfo);
       hilog.warn(0xFF00, "ConfigAutoUpdateService",
@@ -135,21 +141,25 @@ export class ConfigAutoUpdateService {
       const err = e as BusinessError;
       hilog.error(0xFF00, "ConfigAutoUpdateService",
         `注册订阅自动更新延迟任务失败: code=${err.code}, msg=${err.message}`)
+      throw new Error(`注册订阅自动更新任务失败: ${err.code}, ${err.message}`);
     }
   }
 
-  private cancelWork(): void {
-    const bundleName = this.context?.applicationInfo.name ?? ''
-    const workInfo: workScheduler.WorkInfo = {
-      workId: AUTO_UPDATE_WORK_ID,
-      bundleName: bundleName,
-      abilityName: WORK_ABILITY_NAME
-    }
-    try {
-      workScheduler.stopWork(workInfo, true);
-      hilog.info(0xFF00, "ConfigAutoUpdateService", "订阅自动更新延迟任务已停止")
-    } catch (e) {
-      hilog.debug(0xFF00, "ConfigAutoUpdateService", `停止延迟任务(可能不存在): ${(e as BusinessError).code}`)
+  private requireBundleName(): string {
+    const bundleName = this.context?.applicationInfo.name;
+    if (!bundleName) throw new Error('配置自动更新服务尚未初始化');
+    return bundleName;
+  }
+
+  private async cancelWork(): Promise<void> {
+    const bundleName = this.requireBundleName();
+    const works = await workScheduler.obtainAllWorks();
+    for (const work of works) {
+      if (work.workId === AUTO_UPDATE_WORK_ID && work.bundleName === bundleName &&
+        work.abilityName === WORK_ABILITY_NAME) {
+        workScheduler.stopWork(work, true);
+        hilog.info(0xFF00, "ConfigAutoUpdateService", "订阅自动更新延迟任务已停止");
+      }
     }
   }
 

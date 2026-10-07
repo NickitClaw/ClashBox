@@ -59,15 +59,19 @@ export class SocketProxyService implements IClashManager {
 
   async ensureCompatibility(): Promise<RpcCapabilities> {
     if (!this.compatibility) {
-      this.compatibility = this.sendMessageRequest(ClashRpcType.GetCapabilities, []).then((value) => {
+      const pending = this.sendMessageRequest(ClashRpcType.GetCapabilities, []).then((value) => {
         return assertRpcCompatibility(value as string);
       }).catch((e: Error) => {
-        this.compatibility = undefined;
+        if (this.compatibility === pending) {
+          this.compatibility = undefined;
+          this.notifyConnectionRefused(e);
+        }
         if (e instanceof RpcError) {
           throw new RpcError(RpcErrorCode.INCOMPATIBLE_VERSION, '内核协议不兼容，请安装同一次构建的完整应用包');
         }
         throw e;
       });
+      this.compatibility = pending;
     }
     return this.compatibility;
   }
@@ -367,7 +371,7 @@ export class SocketProxyService implements IClashManager {
         settled = true;
         cleanup();
         const err = typeof error === 'string' ? new Error(error) : error;
-        if (method !== ClashRpcType.queryTunnelState) this.notifyConnectionRefused(err);
+        if (method !== ClashRpcType.queryTunnelState && method !== ClashRpcType.GetCapabilities) this.notifyConnectionRefused(err);
         reject(err);
       };
       const succeed = (value: string | number | boolean | undefined) => {
@@ -385,7 +389,7 @@ export class SocketProxyService implements IClashManager {
       });
       client.on('close', () => { fail('连接已关闭，未收到完整响应'); });
       client.on('error', (e: Error) => { fail(e); });
-      timeoutId = setTimeout(() => { fail('RPC 请求超时'); }, (method === ClashRpcType.GetCapabilities || method === ClashRpcType.queryTunnelState) ? 3000 : 60000);
+      timeoutId = setTimeout(() => { fail(`RPC 请求超时（方法 ${method}）`); }, (method === ClashRpcType.GetCapabilities || method === ClashRpcType.queryTunnelState) ? 3000 : 60000);
       const connect = async (): Promise<void> => {
         let path = this.context?.filesDir + '/clash_go.sock';
         if (spec.endpoint === 'vpn') {

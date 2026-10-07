@@ -632,7 +632,7 @@ test('WebDAV debug logs and callbacks redact credentials, URLs and nested secret
   for (const secret of [auth, 'cookie-secret', 'password-secret', 'url-secret', 'user:pass']) assert.ok(!output.includes(secret));
   assert.equal(data.headers.Authorization, auth); // logging must not mutate request headers
 });
-function vpnFixture({ failTun = false, stopGate } = {}) {
+function vpnFixture({ failTun = false, stopGate, allowVpn = true } = {}) {
   const calls = [], time = clock(); let attempts = 0;
   const network = { vpnExtension: { createVpnConnection: () => ({
     create: async () => { attempts++; calls.push('create'); if (failTun) throw new Error('injected TUN failure'); return 7; },
@@ -650,7 +650,7 @@ function vpnFixture({ failTun = false, stopGate } = {}) {
     },
     './VpnNoticeController': { VpnNoticeController: class { async start() {} async stop() {} }, publishReconnectNotice: async () => calls.push('reconnectNotice') }
   }, { ...time, setTimeout: fn => { queueMicrotask(fn); return 1; } });
-  const service = new mod.FlClashVpnService({ filesDir: '/mock/files' });
+  const service = new mod.FlClashVpnService({ filesDir: '/mock/files' }, undefined, allowVpn);
   service.ParseConfig = () => ({}); service.probeKernelRpc = async () => true;
   return { service, calls, time, get attempts() { return attempts; } };
 }
@@ -692,24 +692,39 @@ test('Reconnect notification is handled even when the UI running flag is stale',
   f.handleAutoReconnect({ parameters: { autoReconnect: true } }); await flush();
   assert.equal(starts, 1); assert.equal(f.autoReconnecting, false);
 });
-function viewModelFixture() {
+function viewModelFixture(options = {}) {
   const calls = [], events = [];
   const { ClashViewModel } = load('entry/src/main/ets/entryability/ClashViewModel.ets', {
     '../common/services/ConfigActivationService': activationModule,
     'proxy_core/src/main/ets/rpc/RpcContract.generated': rpcGenerated,
     'proxy_core/src/main/ets/rpc/VpnLifecycleState': lifecycleModule,
     'proxy_core/src/main/ets/ProfileRepo': { ProfileRepo: class {} },
-    'proxy_core': { SocketProxyService: class {} },
+    'proxy_core': { SocketProxyService: class {}, SocketStubService: class {
+      constructor(context, observer, allowVpn) { calls.push(['localCore', context.applicationInfo.name, allowVpn]); }
+      async startService(id) { calls.push('startLocalCore'); if (options.localGate) await options.localGate.promise; }
+      async lockVpn() {}
+      async destroy() { calls.push('destroyLocalCore'); }
+    } },
+    'BuildProfile': { default: { DEBUG: options.debug !== false } },
+    './AppState': { ClashCore: { mihomo: 0, ClashMeta: 1 } },
+    './EntryAbility': { sleep: async () => {} },
+    '@kit.NetworkKit': { vpnExtension: {
+      startVpnExtensionAbility: async want => { calls.push(['startExtension', want]); return options.startExtension?.(want); },
+      stopVpnExtensionAbility: async want => { calls.push(['stopExtension', want]); }
+    } },
+    'proxy_core/src/main/ets/rpc/NativeCompatibility': { assertNativeCompatibility() {} },
     '../common/utils/HHmmssTimer': { Timer: class { reset() { calls.push('resetTimer'); } start() { calls.push('timer'); } } },
     '../common/EventHub': { EventHub: { sendEvent: e => events.push(e) }, EventKey: { StartedClash: 'started', StopedClash: 'stopped' } },
     '../common/utils/CardManageUtil': { cardManager: { pushCartProxyMode: state => calls.push(state ? 'runningCard' : 'stoppedCard'), pushCartVpnState: state => calls.push(state.running ? 'runningCard' : 'stoppedCard'), pushCartVpnServiceTime() {} } },
     '../common/utils/VpnNoticeConfigSync': { syncVpnNoticePrefs: async () => {} },
     '@kit.PerformanceAnalysisKit': { hilog: quiet }
-  }, { AppStorage: { setOrCreate() {} } });
+  }, { AppStorage: { setOrCreate() {}, get: () => ({ clashCore: 0 }) }, ...(options.time || {}) });
   const service = new ClashViewModel(); service.loadConfig = async () => calls.push('loadConfig');
   service.loadVpnOptions = async () => calls.push('loadOptions');
   service.socketProxy.isSocketReady = async () => true;
   service.socketProxy.ensureCompatibility = async () => ({});
+  service.socketProxy.resetCompatibility = () => calls.push('resetCompatibility');
+  service.checkVpnVpnAbility = async () => true;
   service.socketProxy.getRuntime = async () => 0;
   service.socketProxy.queryVpnState = async () => ({ phase: calls.lastIndexOf('start') > calls.lastIndexOf('stop') ? 'running' : 'stopped',
     running: calls.lastIndexOf('start') > calls.lastIndexOf('stop'), desiredRunning: calls.lastIndexOf('start') > calls.lastIndexOf('stop'), startedAt: 100, generation: 1, error: '' });
@@ -876,4 +891,226 @@ test('Large activation snapshots stay outside RPC frames and temporary files clo
   };
   await assert.rejects(f.service.loadConfig({ 'profile-id': 'A', source, config: {}, params: {} }), /connection failed/);
   assert.equal(f.snapshots.size, 0);
+});
+
+test('Cold-start preferences complete before window initialization; no VPN call from onCreate', async () => {
+  const calls = [], gate = deferred();
+  const { default: EntryAbility } = load('entry/src/main/ets/entryability/EntryAbility.ets', {
+    '@kit.AbilityKit': { UIAbility: class {} },
+    '@kit.BasicServicesKit': { deviceInfo: { sdkApiVersion: 26 } },
+    '@kit.PerformanceAnalysisKit': { hilog: quiet, hiAppEvent: { addWatcher() {}, domain: { OS: '' }, event: { APP_CRASH: '' } } },
+    './ClashViewModel': { default: {
+      configureCoreOnlyDebug: value => calls.push(['debug', value]),
+      ChangeCore: () => assert.fail('VPN must not interrupt foundation initialization')
+    } },
+    './AppState': { AppState: { init: async () => calls.push('appState') } },
+    '../common/utils/CardManageUtil': { cardManager: { init: () => calls.push('card') } },
+    '../common/entity/Constants': { BundleInfo: class {} },
+    '../common/utils/BackupRestoreUtil': { default: { init() {} } },
+    '../common/datasources/AccessControlRdb': { accessControlRdb: { init: async () => calls.push('database') } },
+    'xb_components': { Xb_KVdbUtil: { initKVManager() {} }, Xb_ColorUtils: { init() {} }, Xb_PreferenceUtil: {
+      init: async () => { calls.push('preferencesBegin'); await gate.promise; calls.push('preferencesReady'); }
+    } }
+  }, { AppStorage: { setOrCreate(key, value) { if (key === 'awaitInit') calls.push(['readyKey', value]); } },
+    LocalStorage: class { setOrCreate() {} } });
+  const ability = new EntryAbility(); ability.context = { config: { colorMode: 0 } };
+  ability.registerCardEvent = () => calls.push('cardEvents');
+  ability.onCreate({ parameters: { 'clashbox.debugCoreOnly': true } }, {});
+  const window = ability.onWindowStageCreate({
+    setWindowRectAutoSave: async () => calls.push('window'),
+    getMainWindow: cb => cb({ code: 1 }),
+    loadContent: () => calls.push('content')
+  });
+  await flush(); assert.ok(calls.includes('preferencesBegin')); assert.ok(!calls.includes('window'));
+  gate.resolve(); await window;
+  assert.ok(calls.indexOf('preferencesReady') < calls.indexOf('database'));
+  assert.ok(calls.indexOf('database') < calls.indexOf('content'));
+  assert.ok(!calls.includes('appState'), 'UI storage must wait for UIContent initialization');
+  const readyKey = calls.findIndex(call => Array.isArray(call) && call[0] === 'readyKey');
+  assert.ok(readyKey >= 0 && readyKey < calls.indexOf('content'));
+  assert.equal(calls[readyKey][1], false);
+});
+
+test('Late failures from a replaced handshake cannot invalidate the new core handshake', async () => {
+  const f = rpcSocketFixture();
+  const old = assert.rejects(f.service.ensureCompatibility(), /超时/);
+  await flush(); const oldTimeout = [...f.time.timeouts.values()][0];
+  f.service.resetCompatibility();
+  const current = f.service.ensureCompatibility(); await flush();
+  oldTimeout(); await old;
+  const shared = f.service.ensureCompatibility(); await flush();
+  assert.equal(f.clients.length, 2);
+  f.clients[1].respond({ protocolVersion: 1, method: 34, result: JSON.stringify(compatibleCore()) });
+  assert.equal((await current).coreVersion, 'test-core');
+  assert.equal((await shared).coreVersion, 'test-core');
+  await f.service.ensureCompatibility(); assert.equal(f.clients.length, 2);
+});
+
+test('Core startup rejects missing context before calling any VPN API', async () => {
+  const f = viewModelFixture();
+  await assert.rejects(f.service.ChangeCore(), /尚未初始化/);
+  assert.deepEqual(f.calls, []);
+});
+
+test('Debug core startup is shared, uses real local service and never starts a system extension', async () => {
+  const gate = deferred(), f = viewModelFixture({ localGate: gate });
+  f.service.context = { applicationInfo: { name: 'test.bundle' } };
+  f.service.configureCoreOnlyDebug(true);
+  f.service.socketProxy.isSocketReady = async () => f.calls.includes('startLocalCore');
+  const a = f.service.ChangeCore(), b = f.service.ChangeCore();
+  assert.equal(a, b); await flush();
+  assert.equal(f.calls.filter(c => c === 'startLocalCore').length, 1);
+  gate.resolve(); assert.equal(await a, true);
+  await f.service.ChangeCore();
+  assert.equal(f.calls.filter(c => c === 'startLocalCore').length, 1);
+  assert.ok(!f.calls.some(c => Array.isArray(c) && c[0].endsWith('Extension')));
+  assert.deepEqual(f.calls.find(c => Array.isArray(c)), ['localCore', 'test.bundle', false]);
+  await assert.rejects(f.service.StartVpn(), /内核调试模式/);
+  assert.equal(f.service.vpnStarted, false); assert.equal(f.service.desiredRunning, false);
+  await f.service.destroyLocalCore(); await f.service.destroyLocalCore();
+  assert.equal(f.calls.filter(c => c === 'destroyLocalCore').length, 1);
+});
+
+test('Release builds ignore the core-only launch option and use their own bundle for VPN', async () => {
+  const f = viewModelFixture({ debug: false });
+  f.service.context = { applicationInfo: { name: 'release.bundle' } };
+  f.service.configureCoreOnlyDebug(true);
+  f.service.socketProxy.isSocketReady = async () => f.calls.some(c => Array.isArray(c) && c[0] === 'startExtension');
+  assert.equal(await f.service.ChangeCore(0, false), true);
+  const request = f.calls.find(c => Array.isArray(c) && c[0] === 'startExtension')[1];
+  assert.equal(request.bundleName, 'release.bundle'); assert.equal(request.parameters.ClashCore, 0);
+  assert.ok(!f.calls.includes('startLocalCore'));
+});
+
+test('Foreground core creates its service before waiting for the readiness lock', async () => {
+  const f = viewModelFixture(); f.service.context = { applicationInfo: { name: 'test.bundle' } };
+  f.service.socketProxy.isSocketReady = async () => f.calls.includes('startLocalCore');
+  f.service.checkVpnVpnAbility = async () => { assert.ok(f.calls.includes('startLocalCore')); return true; };
+  assert.equal(await f.service.ChangeCore(1, false), true);
+  assert.deepEqual(f.calls.find(c => Array.isArray(c) && c[0] === 'localCore'), ['localCore', 'test.bundle', true]);
+});
+
+test('Undefined VPN API failures produce a useful error and release the startup slot for retry', async () => {
+  let fail = true;
+  const f = viewModelFixture({ startExtension: () => fail ? Promise.reject(undefined) : Promise.resolve() });
+  f.service.context = { applicationInfo: { name: 'test.bundle' } };
+  f.service.socketProxy.isSocketReady = async () => !fail;
+  await assert.rejects(f.service.ChangeCore(0, false), /VPN 扩展启动失败.*授权/);
+  assert.equal(f.service.coreStartup, undefined);
+  fail = false; assert.equal(await f.service.ChangeCore(0, false), true);
+});
+
+test('Unresolved system authorization times out without claiming the core is ready', async () => {
+  const time = clock(), f = viewModelFixture({ time, startExtension: () => new Promise(() => {}) });
+  f.service.context = { applicationInfo: { name: 'test.bundle' } };
+  f.service.socketProxy.isSocketReady = async () => false;
+  const result = assert.rejects(f.service.ChangeCore(0, false), /授权超时/);
+  await flush(); assert.equal(time.timeouts.size, 1);
+  [...time.timeouts.values()][0](); await result;
+  assert.equal(f.service.coreStartup, undefined); assert.equal(f.service.vpnStarted, false);
+});
+
+test('Core-only RPC endpoint refuses start without touching TUN, listeners, state or watchdog', async () => {
+  const f = vpnFixture({ allowVpn: false }), replies = [];
+  f.service.sendClient = async (_, value) => replies.push(JSON.parse(value));
+  const client = { clientId: 1, close: async () => {} };
+  await f.service.onRemoteMessageRequest(client, { message: rpcFrames.encodeRpcFrame(JSON.stringify({ protocolVersion: 1, method: 13, params: [] })) });
+  assert.equal(replies[0].errorCode, 'UNSUPPORTED_METHOD');
+  assert.equal(f.service.lifecycle.snapshot().phase, 'stopped');
+  assert.equal(f.service.lifecycle.snapshot().desiredRunning, false);
+  assert.deepEqual(f.calls, []); assert.equal(f.time.intervals.size, 0);
+});
+
+function workRegistrationFixture() {
+  const calls = [], state = { works: [], profiles: [], queryError: null };
+  const { ConfigAutoUpdateService } = load('entry/src/main/ets/common/utils/ConfigAutoUpdateService.ets', {
+    '@kit.BackgroundTasksKit': { workScheduler: {
+      NetworkType: { NETWORK_TYPE_ANY: 0 },
+      obtainAllWorks: async () => { if (state.queryError) throw state.queryError; return state.works; },
+      stopWork: (work, cancel) => { assert.ok(work.networkType !== undefined); assert.equal(cancel, true); calls.push(['stop', work]); state.works = state.works.filter(w => w !== work); },
+      startWork: work => { calls.push(['start', work]); state.works.push(work); }
+    } },
+    '@kit.PerformanceAnalysisKit': { hilog: quiet },
+    '../../entryability/ClashViewModel': { default: { getProfiles: async () => state.profiles, updateProfile: async () => {} } },
+    '../entity/Constants': { DEFAULT_TIMEOUT: 60000 },
+    './AutoUpdateFilter': { findAutoUpdateTargets: profiles => profiles }
+  });
+  const service = new ConfigAutoUpdateService(); service.initContext({ applicationInfo: { name: 'test.bundle' } });
+  return { service, calls, state };
+}
+test('Cancel auto-update work uses the complete registered work and leaves unrelated tasks alone', async () => {
+  const f = workRegistrationFixture();
+  const registered = { workId: 1001, bundleName: 'test.bundle', abilityName: 'ConfigUpdateWorkAbility', networkType: 0, repeatCycleTime: 7200000, isRepeat: true };
+  const unrelated = { ...registered, workId: 2002 };
+  f.state.works = [registered, unrelated]; await f.service.stop();
+  assert.equal(f.calls.length, 1); assert.equal(f.calls[0][1], registered);
+  assert.deepEqual(f.state.works, [unrelated]);
+  await f.service.stop(); assert.equal(f.calls.length, 1);
+});
+test('Absent auto-update work does not call stopWork with fabricated empty conditions', async () => {
+  const f = workRegistrationFixture(); await f.service.refreshWorkRegistration();
+  assert.deepEqual(f.calls, []);
+});
+test('Concurrent registration then stop leaves no task, and registration does not require unplugged power', async () => {
+  const f = workRegistrationFixture(); f.state.profiles = [{ autoUpdateDuration: 60000 }];
+  await Promise.all([f.service.refreshWorkRegistration(), f.service.stop()]);
+  assert.deepEqual(f.calls.map(c => c[0]), ['start', 'stop']);
+  assert.equal(f.calls[0][1].repeatCycleTime, 1200000);
+  assert.equal(f.calls[0][1].isCharging, undefined);
+  assert.deepEqual(f.state.works, []);
+});
+test('Scheduler lookup failures propagate and do not poison later registrations', async () => {
+  const f = workRegistrationFixture(); f.state.queryError = new Error('scheduler unavailable');
+  await assert.rejects(f.service.stop(), /scheduler unavailable/); assert.deepEqual(f.calls, []);
+  f.state.queryError = null; await f.service.stop(); assert.deepEqual(f.calls, []);
+});
+
+
+test('UI cold-start attaches to an existing compatible core without stopping its VPN', async () => {
+  const f = viewModelFixture(); f.service.context = { applicationInfo: { name: 'test.bundle' } };
+  assert.equal(await f.service.ChangeCore(0, false), true);
+  assert.ok(!f.calls.some(c => Array.isArray(c)));
+  assert.equal(f.service.localCore, undefined);
+});
+test('Core-only mode refuses to replace another running core socket', async () => {
+  const f = viewModelFixture(); f.service.context = { applicationInfo: { name: 'test.bundle' } };
+  f.service.configureCoreOnlyDebug(true);
+  await assert.rejects(f.service.ChangeCore(), /已有内核服务运行/);
+  assert.ok(!f.calls.includes('startLocalCore'));
+});
+test('Destroying during local startup waits and releases the newly created service', async () => {
+  const gate = deferred(), f = viewModelFixture({ localGate: gate });
+  f.service.context = { applicationInfo: { name: 'test.bundle' } }; f.service.configureCoreOnlyDebug(true);
+  f.service.socketProxy.isSocketReady = async () => f.calls.includes('startLocalCore');
+  const start = f.service.ChangeCore(); await flush();
+  const destroy = f.service.destroyLocalCore(); await flush(); assert.ok(!f.calls.includes('destroyLocalCore'));
+  gate.resolve(); await Promise.all([start, destroy]);
+  assert.equal(f.calls.filter(c => c === 'destroyLocalCore').length, 1); assert.equal(f.service.localCore, undefined);
+});
+
+test('URL import updates scheduling only after the database commit and always closes the progress dialog', async () => {
+  const source = fs.readFileSync(path.join(root, 'entry/src/main/ets/components/Configuration/ImportConfigFromURL.ets'), 'utf8');
+  const start = source.indexOf('  async saveConfig(isNewConfig: boolean)');
+  const method = source.slice(start, source.indexOf('  /**', start));
+  for (const fails of [false, true]) {
+    const gate = deferred(), calls = [], messages = [];
+    const { Fixture } = load('import-fixture.ts', {}, {
+      $r: name => name,
+      getResourceString: name => name + ': ',
+      Xb_ToastUtil: { showToast: ({ message }) => messages.push(message) },
+      ClashViewModel: { addOrUpdateProfileByUrl: async () => { await gate.promise; if (fails) throw { message: 'invalid YAML', stack: 'private-stack' }; calls.push('commit'); } },
+      ConfigAutoUpdateService: { reset: async () => calls.push('reset') }
+    }, `export class Fixture {
+      configData = {}; uiConfig = {}; appLinkConfigUrl = 'url';
+      configCustomDownloadingDialogController = { open() {}, close() {} };
+      ${method}
+    }`);
+    // Install a local progress controller so its lifecycle can be observed.
+    const f = new Fixture(); f.configCustomDownloadingDialogController = { open: () => calls.push('open'), close: () => calls.push('close') };
+    const pending = f.saveConfig(true); await flush(); assert.deepEqual(calls, ['open']);
+    gate.resolve(); await pending;
+    assert.deepEqual(calls, fails ? ['open', 'close', 'reset'] : ['open', 'commit', 'close', 'reset']);
+    assert.equal(f.isConfigDownloading, false); assert.equal(f.appLinkConfigUrl, '');
+    if (fails) { assert.ok(messages[0].includes('invalid YAML')); assert.ok(!messages[0].includes('private-stack')); assert.ok(!messages[0].includes('undefined')); }
+  }
 });

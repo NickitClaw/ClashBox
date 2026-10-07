@@ -259,11 +259,9 @@ struct ConfigurationPage {
                         if (event) {
                           hilog.debug(0xC020, componentName, `#TapGesture 配置列表项单击`)
                           this.isON.toggleAnim = true
-                          if (this.currentRadioConfigData.configId != item.configId) {
+                          if (this.appConfig.currentProfileId != item.configId) {
                             this.loadConfig(item)
                           }
-                          // 更新当前选中
-                          this.currentRadioConfigData = item
                         }
                       })
                   )
@@ -746,6 +744,7 @@ struct ConfigurationPage {
     })
     try {
       await ClashViewModel.activateProfile(item.configId, needUpdated && !item.disableUpdate)
+      this.currentRadioConfigData = item
       hilog.info(0xC011, componentName, `EditConfig #loadConfig#更新并加载完成 configName is [${this.currentTouchConfigData.configName}]`)
     } catch (e) {
       console.debug("loadConfigList", e.message, JSON.stringify(e))

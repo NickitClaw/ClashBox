@@ -5,7 +5,7 @@ import { ProfileStorage } from 'proxy_core/src/main/ets/profile/ProfileStorage';
 import { assertNativeCompatibility } from 'proxy_core/src/main/ets/rpc/NativeCompatibility';
 import { ProfileRepo } from "proxy_core/src/main/ets/ProfileRepo";
 import { Context, Want } from "@kit.AbilityKit";
-import { SocketProxyService, Profile, ProfileType, UpdateConfigParams, ClashConfig, getHome,
+import { SocketProxyService, SocketStubService, Profile, ProfileType, UpdateConfigParams, ClashConfig, getHome,
   LogInfo,
   Provider,
   ProxyMode,
@@ -33,6 +33,7 @@ import { Xb_GetResourceString, Xb_ToastUtil } from "xb_components";
 import { accessControlRdb } from "../common/datasources/AccessControlRdb";
 import { syncVpnNoticePrefs } from "../common/utils/VpnNoticeConfigSync";
 import { deviceInfo } from "@kit.BasicServicesKit";
+import BuildProfile from 'BuildProfile';
 
 /** VPN 授权结果监听（vpnExtension.createVpnObserver）自 API 26.0.0 起可用 */
 const VPN_OBSERVER_MIN_API = 26
@@ -47,6 +48,9 @@ export class ClashViewModel {
   profileRepo = new ProfileRepo()
   socketProxy = new SocketProxyService()
   context: Context | undefined
+  private coreOnlyDebug: boolean = false
+  private localCore: SocketStubService | undefined
+  private coreStartup: Promise<boolean> | undefined
   proxyStartedTimer = new Timer()
   static promptAction: PromptAction
   async init(context: Context, promptAction: PromptAction) {
@@ -408,24 +412,68 @@ export class ClashViewModel {
     }
     return []
   }
-  //BUG 第一次启动，参数传不过去
-  // 第一次要权限弹窗
-  async ChangeCore(coreType: ClashCore | undefined = undefined, restart: boolean = true) {
+  /** 仅冷启动参数启用，不持久化；Release 构建始终走系统 VPN 授权。 */
+  configureCoreOnlyDebug(enabled: boolean): void {
+    this.coreOnlyDebug = BuildProfile.DEBUG && enabled
+  }
+
+  async destroyLocalCore(): Promise<void> {
+    if (this.coreStartup) await this.coreStartup.catch(() => false)
+    await this.releaseLocalCore()
+  }
+
+  private async releaseLocalCore(): Promise<void> {
+    const service = this.localCore
+    this.localCore = undefined
+    if (service) await service.destroy()
+  }
+
+  ChangeCore(coreType: ClashCore | undefined = undefined, restart: boolean = true): Promise<boolean> {
+    if (this.coreStartup) return this.coreStartup
+    const pending = this.startCore(coreType, restart).finally(() => {
+      if (this.coreStartup === pending) this.coreStartup = undefined
+    })
+    this.coreStartup = pending
+    return pending
+  }
+
+  private async startCore(coreType: ClashCore | undefined, restart: boolean): Promise<boolean> {
+    const context = this.context
+    if (!context?.applicationInfo?.name) throw new Error('应用尚未初始化，无法启动内核')
     try { assertNativeCompatibility(); } catch (e) {
-      ClashViewModel.promptAction?.showToast({ message: (e as Error).message, duration: 5000 });
+      ClashViewModel.promptAction?.showToast({ message: (e as Error)?.message ?? '原生内核不兼容', duration: 5000 });
       throw e as Error;
     }
     this.socketProxy.resetCompatibility();
     let requestId = Date.now();
     this.vpnRequestId = requestId;
+    const selectedCore = coreType ?? AppStorage.get<AppConfig>('appConfig')?.clashCore ?? ClashCore.mihomo
+    if (this.coreOnlyDebug) {
+      if (!this.localCore && await this.socketProxy.isSocketReady()) {
+        throw new Error('已有内核服务运行，请先停止 VPN 再启动内核调试模式')
+      }
+      await this.startLocalCore(requestId, false)
+      for (let i = 0; i < 30 && !await this.socketProxy.isSocketReady(); i++) await sleep(200)
+      // 页面可能已向旧 socket 发出握手；监听器就绪后必须重新确认这一代内核。
+      this.socketProxy.resetCompatibility()
+      await this.socketProxy.ensureCompatibility()
+      hilog.info(0x0000, 'ClashViewModel', '内核调试模式已就绪；系统 VPN 未启动')
+      return true
+    }
+    if (!restart && await this.socketProxy.isSocketReady()) {
+      // UI 冷启动时可以附着仍在运行的 VPN 扩展，不能重启或要求其重写 readiness lock。
+      await this.socketProxy.ensureCompatibility()
+      return true
+    }
     const vpnWant = {
       deviceId: "",
-      bundleName: this.context?.applicationInfo.name, // release: org.xbgroup.clashbox, debug: org.xbgroup.clashboxb
+      bundleName: context.applicationInfo.name,
       abilityName: "ClashVpnAbility",
-      parameters: { "ClashCore" : coreType, requestId }
+      parameters: { "ClashCore" : selectedCore, requestId }
     } as Want
     // 若vpn进程没启动直接停止，会导致卡死或闪退， 不同系统不同现象
     if (restart) {
+      await this.releaseLocalCore()
       // 停止vpn进程
       try {
         await vpnExtension.stopVpnExtensionAbility(vpnWant)
@@ -433,10 +481,17 @@ export class ClashViewModel {
         console.error(`ClashViewModel.ChangeCore restart过程中VPN进程终止失败: ${JSON.stringify(error)}`)
       }
     }
-    await vpnExtension.startVpnExtensionAbility(vpnWant)
+    try {
+      await this.requestVpnExtension(vpnWant)
+    } catch (error) {
+      throw new Error(`VPN 扩展启动失败: ${(error as Error)?.message ?? '系统未完成授权或缺少 VPN 授权组件'}`)
+    }
+    // 前台内核模式由 UI 进程持有服务，不能先等待只有本服务才会创建的 socket/lock。
+    if (selectedCore !== ClashCore.mihomo) await this.startLocalCore(requestId, true)
     let result = false
     for (let i = 0; i < 30; i++) {
       if (await this.checkVpnVpnAbility(requestId) && await this.socketProxy.isSocketReady()) {
+        this.socketProxy.resetCompatibility()
         try { await this.socketProxy.ensureCompatibility(); } catch (e) {
           ClashViewModel.promptAction?.showToast({ message: (e as Error).message, duration: 5000 });
           throw e as Error;
@@ -450,6 +505,39 @@ export class ClashViewModel {
       ClashViewModel.promptAction.showToast({message:"VpnAbility请求失败! 请重启应用"})
     }
     return result;
+  }
+
+  private async startLocalCore(requestId: number, allowVpn: boolean): Promise<void> {
+    if (this.localCore) {
+      await this.localCore.lockVpn(requestId)
+      return
+    }
+    const service = new SocketStubService(this.context!, (state) => { cardManager.pushCartVpnState(state) }, allowVpn)
+    try {
+      await service.startService(requestId)
+      this.localCore = service
+    } catch (error) {
+      await service.destroy().catch(() => {})
+      throw error as Error
+    }
+  }
+
+  private requestVpnExtension(want: Want): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('等待系统 VPN 授权超时，请授权后重试')), 15000)
+      try {
+        vpnExtension.startVpnExtensionAbility(want).then(() => {
+          clearTimeout(timer)
+          resolve()
+        }, (error: Error) => {
+          clearTimeout(timer)
+          reject(error)
+        })
+      } catch (error) {
+        clearTimeout(timer)
+        reject(error)
+      }
+    })
   }
 
   private async checkVpnVpnAbility(reqId: number): Promise<boolean>{
@@ -619,6 +707,7 @@ export class ClashViewModel {
   }
 
   async StartVpn(): Promise<void> {
+    if (this.coreOnlyDebug) throw new Error('当前为内核调试模式，不能启动系统 VPN')
     this.desiredRunning = true
     const generation = ++this.intentGeneration
     return this.queueVpnOperation(() => this.startVpnConfirmed(generation))

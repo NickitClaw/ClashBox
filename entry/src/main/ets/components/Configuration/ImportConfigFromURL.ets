@@ -223,46 +223,24 @@ export struct ImportConfigFromURL {
   async saveConfig(isNewConfig: boolean) {
     this.isConfigDownloading = true
     this.currentTouchConfigData = this.configData
-    hilog.info(0xFF00, "EditConfig #saveConfig configSaveTestTag", `URL新文件保存：${isNewConfig}`)
-    hilog.info(0xC002, componentName,
-      `EditConfig #saveConfig Name: ${this.currentTouchConfigData.configName} configUrl is [${this.currentTouchConfigData.configUrl}]`)
-    if (isNewConfig) {
-      this.customDownloadingDialogTitle = $r('app.string.downloading_configuration_file')
-      this.configCustomDownloadingDialogController.open()
-      ClashViewModel.addOrUpdateProfileByUrl(this.configData, null)
-        .then(() => {
-          Xb_ToastUtil.showToast({message: getResourceString($r('app.string.download_success'), this)})
-          this.isConfigDownloading = false
-          this.configCustomDownloadingDialogController.close()
-        })
-        .catch((err: Error) => {
-          console.error("ClashBox下载配置失败：", err.message, err.stack);
-          this.isConfigDownloading = false
-          Xb_ToastUtil.showToast({message: getResourceString($r('app.string.download_failed'), this) + `name: ${err.name}, message: ${err.message}, stack: ${err.stack}`})
-          this.configCustomDownloadingDialogController.close()
-        })
-      if (this.appLinkConfigUrl != '') {
-        this.appLinkConfigUrl = ''
-      }
-    } else {
-      this.customDownloadingDialogTitle = $r('app.string.updating_configuration_file')
-      this.configCustomDownloadingDialogController.open()
-      this.uiConfig.autoUpdateTimeUtils = this.configData.configAutoUpdateTimeGapTextPickerIndex
-      try {
-        await ClashViewModel.addOrUpdateProfileByUrl(this.configData, this.configData.configId)
-        this.isConfigDownloading = false
-        this.configCustomDownloadingDialogController.close()
-      } catch (e) {
-        console.error("ClashBox下载配置失败：", e.message, e.stack);
-        this.isConfigDownloading = false
-        this.configCustomDownloadingDialogController.close()
-        Xb_ToastUtil.showToast({message: getResourceString($r('app.string.download_failed'), this) + e.message || e})
-      }
-
+    this.customDownloadingDialogTitle = isNewConfig ? $r('app.string.downloading_configuration_file') :
+      $r('app.string.updating_configuration_file')
+    if (!isNewConfig) this.uiConfig.autoUpdateTimeUtils = this.configData.configAutoUpdateTimeGapTextPickerIndex
+    this.configCustomDownloadingDialogController.open()
+    try {
+      await ClashViewModel.addOrUpdateProfileByUrl(this.configData, isNewConfig ? null : this.configData.configId)
+      if (isNewConfig) Xb_ToastUtil.showToast({ message: getResourceString($r('app.string.download_success'), this) })
+    } catch (error) {
+      const message = (error as Error)?.message ?? String(error ?? '未知错误')
+      console.error('ClashBox导入配置失败：', message, (error as Error)?.stack)
+      Xb_ToastUtil.showToast({ message: getResourceString($r('app.string.import_failed'), this) + message })
+    } finally {
+      this.isConfigDownloading = false
+      this.configCustomDownloadingDialogController.close()
+      if (isNewConfig) this.appLinkConfigUrl = ''
+      // 必须在配置写入数据库后重新计算调度，否则新增的自动更新订阅会被遗漏。
+      await ConfigAutoUpdateService.reset()
     }
-
-    // 检查是否需要开启配置自动更新服务
-    ConfigAutoUpdateService.reset()
   }
 
   /**

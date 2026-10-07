@@ -3,9 +3,9 @@ import { hiAppEvent, hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
 import { BusinessError } from '@kit.BasicServicesKit';
 import ClashViewModel from './ClashViewModel';
-import { AppConfig, AppState, ClashCore } from './AppState';
+import { AppConfig, AppState } from './AppState';
 import { EventHub, EventKey } from '../common/EventHub';
-import { ClashConfig, SocketStubService } from 'proxy_core';
+import { ClashConfig } from 'proxy_core';
 import { deviceInfo } from '@kit.BasicServicesKit';
 import { url } from '@kit.ArkTS';
 import { cardManager } from '../common/utils/CardManageUtil';
@@ -38,7 +38,7 @@ export default class EntryAbility extends UIAbility {
   private isFirstStart: boolean = true
   // 设备断点获取
   private uiContext?: UIContext;
-  private debugVpn: SocketStubService | null = null
+  private appInitialization: Promise<void> = Promise.resolve()
   private onWindowSizeChange: (windowSize: window.Size) => void = (windowSize: window.Size) => {
     let widthBp: WidthBreakpoint = this.uiContext!.getWindowWidthBreakpoint();
     AppStorage.setOrCreate('currentWidthBreakpoint', widthBp);
@@ -73,12 +73,18 @@ export default class EntryAbility extends UIAbility {
   }
 
   // 冷启动
-  async onCreate(want: Want, launchParam: AbilityConstant.LaunchParam) {
+  onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     hilog.info(0x0000, 'EntryAbility', '%{public}s', 'Ability onCreate');
-    // 赋值临时储存want
     this.want = want
-    // 优先级最高-初始化内核
-    await ClashViewModel.ChangeCore(undefined, false)
+    ClashViewModel.configureCoreOnlyDebug(want.parameters?.['clashbox.debugCoreOnly'] === true)
+    // Ability 生命周期不会等待异步 onCreate；窗口和卡片入口共享这个初始化屏障。
+    this.appInitialization = this.initializeApp(want)
+    this.appInitialization.catch((error: Error) => {
+      hilog.error(0x0000, 'EntryAbility', `基础初始化失败: ${error?.message ?? String(error)}`)
+    })
+  }
+
+  private async initializeApp(want: Want): Promise<void> {
     // 卡片Id持久化管理 并 监听卡片事件
     cardManager.init(this.context)
     this.registerCardEvent()
@@ -95,7 +101,7 @@ export default class EntryAbility extends UIAbility {
       hilog.error(0x0000, 'EntryAbility', 'Xb_PreferenceUtil initialization failed.');
     }
     // 初始化访问控制数据库
-    accessControlRdb.init(this.context)
+    await accessControlRdb.init(this.context)
     // 添加崩溃监听
     try {
       hiAppEvent.addWatcher({
@@ -165,6 +171,9 @@ export default class EntryAbility extends UIAbility {
   async onWindowStageCreate(windowStage: window.WindowStage): Promise<void> {
     // Main window is created, set main page for this ability
     hilog.info(0x0000, 'EntryAbility', '%{public}s', 'Ability onWindowStageCreate');
+    await this.appInitialization
+    // 新窗口在基础初始化完成后统一发布就绪状态和配置刷新事件。
+    AppStorage.setOrCreate('awaitInit', false)
 
     // 判断API版本是否满足要求
     const APIVersion = deviceInfo.sdkApiVersion
@@ -201,9 +210,6 @@ export default class EntryAbility extends UIAbility {
         hilog.error(0x0000, 'EntryAbility', 'Failed to load the content. Cause: %{public}s', JSON.stringify(err) ?? '');
         return;
       }
-      // 初始化应用配置
-      await AppState.init()
-
       // 推荐在 DEBUG 模式下使用 - 动态加载
       if (BuildProfile.DEBUG) {
         import('@cxy/sandboxfinder').then(async (ns: ESObject) => {
@@ -252,7 +258,13 @@ export default class EntryAbility extends UIAbility {
 
         // 卡片初始化过就无须再次初始化
         if (!this.clashCoreInitialized) {
-          await this.ClashCoreInit();
+          try {
+            await this.ClashCoreInit();
+          } catch (error) {
+            const message = (error as Error)?.message ?? 'VPN 扩展或内核启动失败'
+            hilog.error(0x0000, 'EntryAbility', message)
+            this.uiContext.getPromptAction().showToast({ message, duration: 5000 })
+          }
         }
 
         // 看门狗"VPN 已断开，点击重连"通知拉起（冷启动）
@@ -267,7 +279,7 @@ export default class EntryAbility extends UIAbility {
         await this.getShareData(this.want!);
 
       } catch (err) {
-        console.error(`Failed to obtain the main window. Cause code: ${err.code}, message: ${err.message}`);
+        console.error(`窗口初始化失败: ${(err as Error)?.message ?? String(err)}`);
       }
 
       // 执行首次窗口检测
@@ -275,6 +287,7 @@ export default class EntryAbility extends UIAbility {
 
       // 初始化完成标记
       AppStorage.setOrCreate('awaitInit', true)
+      EventHub.sendEvent(EventKey.FetchProfile)
     });
 
     let deviceTypeInfo: string = deviceInfo.deviceType;
@@ -332,8 +345,10 @@ export default class EntryAbility extends UIAbility {
     // Ability has back to background
     AppStorage.setOrCreate('ForwardState', false)
     hilog.info(0x0000, 'EntryAbility', '%{public}s', 'Ability onBackground');
-    this.saveConfigThePreferences();
-    Xb_PreferenceUtil.save().then(() => {
+    this.appInitialization.then(async () => {
+      this.saveConfigThePreferences();
+      await Xb_PreferenceUtil.save();
+    }).then(() => {
       hilog.debug(0xC020, 'EntryAbility',
         `#onBackground ConfigSort Xb_PreferenceUtil 首选项保存成功`)
     }).catch((err: BusinessError) => {
@@ -350,6 +365,9 @@ export default class EntryAbility extends UIAbility {
     cardManager.pushCartProxyMode(false)
     // 取消 VPN 授权结果监听（API 26+）
     ClashViewModel.releaseVpnAuthObserver()
+    ClashViewModel.destroyLocalCore().catch((error: Error) => {
+      console.warn(`前台内核清理失败: ${error?.message ?? String(error)}`)
+    })
     // 订阅自动更新已迁移到 WorkScheduler 延迟任务，由系统调度，不随 UI 进程销毁而停止
   }
 
@@ -445,11 +463,7 @@ export default class EntryAbility extends UIAbility {
   /** @description 初始化Clash核心 */
   private async ClashCoreInit() {
     const clashCore = (AppStorage.get<AppConfig>("appConfig") || cardManager.getAppConfig())?.clashCore
-    await ClashViewModel.ChangeCore(clashCore);
-    if (clashCore != ClashCore.mihomo) {
-      let service = new SocketStubService(this.context, (state) => { cardManager.pushCartVpnState(state); });
-      await service.startService(Date.now());
-    }
+    if (!await ClashViewModel.ChangeCore(clashCore, false)) throw new Error('VPN 扩展或内核未就绪')
     await ClashViewModel.socketProxy.ensureCompatibility();
     await ClashViewModel.initProfile();
     EventHub.on(EventKey.LoadClashConfig, (isPatch: boolean) => {
@@ -483,6 +497,7 @@ export default class EntryAbility extends UIAbility {
   /** @description 卡片Clash核心触发事件 */
   private async CardClashCoreEvent(proxyActionType: ProxyActionType): Promise<void> {
     hilog.info(0x0000, 'EntryAbility', '%{public}s', 'CardClashCoreEvent');
+    await this.appInitialization
     // 初始化核心
     if (!this.clashCoreInitialized) {
       await ClashViewModel.init(this.context, this.uiContext?.getPromptAction()!)

@@ -72,9 +72,11 @@ export interface VpnOptions {
 
 
 export class FlClashVpnService extends CommonVpnService {
-  constructor(context: common.Context, observer?: (state: VpnSnapshot) => void) {
+  private allowVpn: boolean;
+  constructor(context: common.Context, observer?: (state: VpnSnapshot) => void, allowVpn: boolean = true) {
     super(context);
     this.lifecycle = new VpnLifecycleState(observer);
+    this.allowVpn = allowVpn;
   }
   vpnConnection: vpnExtension.VpnConnection | undefined
   public configPath: string = ""
@@ -296,6 +298,9 @@ export class FlClashVpnService extends CommonVpnService {
   }
 
   override async startVpn(): Promise<boolean> {
+    if (!this.allowVpn) {
+      throw new RpcError(RpcErrorCode.UNSUPPORTED_METHOD, '当前为内核调试模式，不能启动系统 VPN');
+    }
     return this.enqueueVpnOp('start')
   }
 

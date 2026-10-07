@@ -98,6 +98,9 @@ import { PCIndex } from './PCIndex';
 import { accessControlRdb, AppInfo, ListType } from '../common/datasources/AccessControlRdb';
 import { FloatBar } from '../components/Common/FloatBar';
 
+// UIContent 此时已就绪；先恢复持久化状态，再创建任何 @StorageLink 默认值。
+AppState.init()
+
 export const indexController: TabsController = new TabsController()
 const swiperController: SwiperController = new SwiperController()
 
@@ -182,7 +185,6 @@ struct Index {
   // 前台判断变量
   @StorageProp('ForwardState') isForward: boolean = true
   // 初始化是否完成
-  @StorageProp('awaitInit') theAwaitInit: boolean = false
   // 窗口模式
   @StorageProp('WindowMode') windowMode: boolean = false
   // 设置模态页控制变量
@@ -873,7 +875,8 @@ struct Index {
     })
 
     // 初始化配置列表
-    await this.awaitInit()
+    // 冷启动完成后由 EntryAbility 发事件；页面重建时直接读取已就绪的数据库。
+    if (AppStorage.get<boolean>('awaitInit') === true) await this.fetchProfiles(true)
 
     // 初始化实况窗
     LiveViewUtil.init(this.getUIContext().getHostContext()!)
@@ -1242,17 +1245,6 @@ struct Index {
       }
     }, 3000)
 
-  }
-
-  // 等待配置数据库初始化完成
-  async awaitInit() {
-    const checkInterval = setInterval(() => {
-      if (this.theAwaitInit) {
-        // 获取配置列表
-        this.fetchProfiles(true)
-        clearInterval(checkInterval)
-      }
-    }, 100);
   }
 
   async saveLog(uri: string, logDdata?: LogData): Promise<void> {

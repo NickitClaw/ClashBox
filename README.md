@@ -122,4 +122,26 @@ bash scripts/build-hap.sh
 修改原生源码/协议后若未重建，CI 会失败。HAP 旁的 `entry-default-unsigned.build.json` 额外记录应用提交、工作区状态和包摘要。
 完整 HAP 构建在开发机执行；GitHub 托管任务不安装 DevEco SDK，也不配置签名或发布安装包。
 
+#### 模拟器内核调试
+
+部分模拟器镜像缺少 `com.huawei.hmos.vpndialog`，无法完成系统 VPN 授权。
+Debug 构建可通过冷启动参数运行 UI 进程内的真实 Go 内核和双端 IPC，验证配置导入、校验、
+数据库保存、配置激活、代理组查询和错误处理：
+
+```sh
+hdc -t 127.0.0.1:5555 install -r entry/build/default/outputs/default/entry-default-unsigned.hap
+hdc -t 127.0.0.1:5555 shell aa force-stop org.xbgroup.clashboxLTS
+hdc -t 127.0.0.1:5555 shell aa start -a EntryAbility -b org.xbgroup.clashboxLTS --pb clashbox.debugCoreOnly true
+```
+
+该选项仅在 Debug 构建的 `onCreate` 生效，不写入首选项；Release 构建忽略此参数。
+调试模式下，界面和 IPC 均明确拒绝启动系统 VPN，状态保持未连接，不创建 TUN，也不启动代理监听端口。
+不要将配置导入和代理组查询通过视为 VPN 流量转发通过。退出该模式需强制停止后不带此参数重新启动。
+日志中的“内核调试模式已就绪”表示 NAPI 与 Go IPC 兼容性检查均已完成。
+
+基础初始化（Context、首选项和数据库）先于内核启动；VPN 授权失败不会中断其初始化。
+持久化状态在 UIContent 就绪后、页面组件创建前恢复，初始化结束主动刷新配置列表。
+系统 VPN 授权等待有超时提示，授权完成后可重试。自动更新任务的注册/取消串行执行，
+取消时使用系统已登记任务的完整条件，无任务时直接返回。
+
 设备验证还应覆盖：后台锁屏后代理流量、通知开关、连续启停、扩展进程被回收后重连，以及自动更新与手动编辑同时发生。

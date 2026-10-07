@@ -14,9 +14,9 @@ export class SocketStubService {
   clientPool: Map<number, socket.LocalSocketConnection>
   vpnService: CommonVpnService
   private initialized: Promise<void>
-  constructor(context: common.Context, observer?: (state: VpnSnapshot) => void) {
+  constructor(context: common.Context, observer?: (state: VpnSnapshot) => void, allowVpn: boolean = true) {
     this.clientPool = new Map()
-    this.vpnService = new FlClashVpnService(context, observer)
+    this.vpnService = new FlClashVpnService(context, observer, allowVpn)
     this.initialized = this.vpnService.init()
   }
 
