@@ -40,6 +40,9 @@ devecocli build --modules entry --build-mode debug
 
 默认构建未签名 HAP，不依赖原作者的证书路径。真机安装需在自己的 DevEco Studio 中配置签名。当前提供 arm64 内核；amd64 需要单独编译并补齐其它原生依赖。
 
+`appPath`、`CommonVpnService` 和 `FlClashVpnService` 的唯一源码入口为 `.ets`。
+构建缓存和 source map 的模块键可能以 `.ts` 结尾，其 `sources` 字段仍指向 `.ets`；不要将生成文件复制回源码目录，也不要维护同路径同名的 `.ts` / `.ets` 两套实现。
+
 IPC 请求和响应统一使用「4 字节大端 UTF-8 字节数 + JSON」帧，单帧上限 4 MiB；日志连接支持连续多帧。
 因此 ArkTS 客户端、扩展进程和 `libflclash.so` 必须一起更新。NAPI `startTun` 返回 `Promise<boolean>`，
 `stopTun` 返回 `Promise<void>`，完成/失败均由原生层确认。不要替换回旧 `.so` 后仅测试前端构建。
