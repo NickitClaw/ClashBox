@@ -35,7 +35,6 @@ import { accessControlRdb } from '../common/datasources/AccessControlRdb';
 
 export default class EntryAbility extends UIAbility {
   private want?: Want
-  private isChangeCore = false
   private windowMode: boolean = false
   private isFirstStart: boolean = true
   // 设备断点获取
@@ -51,6 +50,8 @@ export default class EntryAbility extends UIAbility {
   private clashCoreInitialized: boolean = false
   /** @description ClashCore是否初始化过 */
   private cardCoreInitialized: boolean = false
+  /** @description 重连通知拉起的自动重连防重入标记 */
+  private autoReconnecting: boolean = false
   /** @description 包名信息 */
   private bundleInfo: BundleInfo = new BundleInfo()
   /** @description 卡片延迟定时器 */
@@ -176,6 +177,32 @@ export default class EntryAbility extends UIAbility {
 
     // 从want中获取传入的链接信息
     this.getSharedConfigUrl(want);
+
+    // 看门狗"VPN 已断开，点击重连"通知拉起（热启动）
+    this.handleAutoReconnect(want)
+  }
+
+  /**
+   * @description 处理看门狗重连通知的拉起：扩展进程内核自愈多次失败后发布该通知，
+   * 点击后经 want.parameters.autoReconnect 触发一次 VPN 重连。
+   * 仅在核心已初始化且 VPN 未运行时执行，防重复触发。
+   */
+  private handleAutoReconnect(want?: Want): void {
+    if (want?.parameters?.['autoReconnect'] !== true) {
+      return
+    }
+    if (!this.clashCoreInitialized || ClashViewModel.vpnStarted || this.autoReconnecting) {
+      return
+    }
+    this.autoReconnecting = true
+    hilog.info(0x0000, 'EntryAbility', '接收到重连通知拉起，自动重连 VPN')
+    ClashViewModel.StartVpn()
+      .catch((err: Error) => {
+        hilog.error(0x0000, 'EntryAbility', `自动重连 VPN 失败: ${err.message}`)
+      })
+      .finally(() => {
+        this.autoReconnecting = false
+      })
   }
 
   async onWindowStageCreate(windowStage: window.WindowStage): Promise<void> {
@@ -271,6 +298,9 @@ export default class EntryAbility extends UIAbility {
           await this.ClashCoreInit();
         }
 
+        // 看门狗"VPN 已断开，点击重连"通知拉起（冷启动）
+        this.handleAutoReconnect(this.want)
+
         // 卡片初始化过打开应用获取一次代理节点
         if (this.cardCoreInitialized) {
           ClashViewModel.loadConfig(true, '卡片初始化过打开应用获取一次代理节点')
@@ -356,18 +386,9 @@ export default class EntryAbility extends UIAbility {
     // 移除卡片监听事件
     this.unRegisterCardEvent()
     cardManager.pushCartProxyMode(false)
-    // 停止配置自动更新服务
-    this.stopConfigAutoUpdateService()
-  }
-
-  /** @description 停止配置自动更新服务 */
-  private stopConfigAutoUpdateService(): void {
-    ConfigAutoUpdateService.stop().then(() => {
-      hilog.info(0xFF00, 'ConfigAutoUpdateService', '配置自动更新服务已停止');
-    }).catch((error: BusinessError) => {
-      hilog.error(0xFF00, 'ConfigAutoUpdateService',
-        `配置自动更新服务停止失败: ${error.message}`);
-    });
+    // 取消 VPN 授权结果监听（API 26+）
+    ClashViewModel.releaseVpnAuthObserver()
+    // 订阅自动更新已迁移到 WorkScheduler 延迟任务，由系统调度，不随 UI 进程销毁而停止
   }
 
   /** @description 获取分享的配置URL */
@@ -460,7 +481,6 @@ export default class EntryAbility extends UIAbility {
   private async ClashCoreInit() {
     const clashCore = (AppStorage.get<AppConfig>("appConfig") || cardManager.getAppConfig())?.clashCore
     await ClashViewModel.ChangeCore(clashCore);
-    this.isChangeCore = true
     if (clashCore != ClashCore.mihomo) {
       let service = new SocketStubService(this.context);
       await service.startService(Date.now());
@@ -469,25 +489,9 @@ export default class EntryAbility extends UIAbility {
     EventHub.on(EventKey.LoadClashConfig, (isPatch: boolean) => {
       ClashViewModel.loadConfig(isPatch, 'ClashCoreInit-EventKey.LoadClashConfig');
     });
-    // 监测vpn服务是否被回收，并且重新启动
-    setInterval(async () => {
-      if (!ClashViewModel.socketProxy.active) {
-        ClashViewModel.socketProxy.active = true;
-        ClashViewModel.socketProxy.offlineTime.push(Date.now());
-        Xb_ToastUtil.showToast({
-          message: `核心恢复中(${ClashViewModel.socketProxy.offlineTime.length})...`
-        });
-        // let clashCore = AppStorage.get<AppConfig>("appConfig")?.clashCore;
-        if (!this.isChangeCore) {
-          let result = await ClashViewModel.ChangeCore(clashCore);
-          if (result) {
-            await ClashViewModel.ReStartVpn();
-          }
-        } else {
-          this.isChangeCore = false
-        }
-      }
-    }, 1000);
+    // 内核失联自愈已迁移到 VPN 扩展进程内（FlClashVpnService 看门狗）：
+    // UI 进程退后台会被挂起，每秒轮询自愈既不可靠也无意义；
+    // 若扩展进程自身被系统杀掉，系统回收 VPN 连接，UI 回到前台时通过现有状态同步显示已停止。
     EventHub.sendEvent(EventKey.checkIpInfo);
     hilog.info(0x0000, 'EntryAbility', 'Succeeded in loading the content.');
 

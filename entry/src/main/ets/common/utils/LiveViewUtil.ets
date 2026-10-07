@@ -8,25 +8,51 @@ import { BusinessError } from '@kit.BasicServicesKit';
 class LiveViewUtil {
 
   private static context: Context;
-  liveID: number = 0
+  /** 实况窗刷新定时器（与实况窗 ID 分离；原实现共用 liveID，停止/失败路径极易泄漏定时器） */
+  private liveTimerId: number = 0
+  /** 实况窗 ID（start/update/stop 三段必须一致，固定值即可，单例只维护一个实况窗） */
+  private liveViewId: number = 1
 
   public async init(context: Context): Promise<boolean> {
     LiveViewUtil.context = context
     return true
   }
 
+  /** context 兜底：正常由 Index 页面 aboutToAppear 时 init() 注入；未注入时抛出明确错误 */
+  private static safeContext(): Context {
+    if (!LiveViewUtil.context) {
+      throw new Error('LiveViewUtil context 未初始化（init 未被调用）')
+    }
+    return LiveViewUtil.context
+  }
+
+  /** 先清旧定时器：任何路径（启动失败/重复启动/停止/系统接口异常）都不允许定时器累积 */
+  private clearTimer(): void {
+    if (this.liveTimerId != 0) {
+      clearInterval(this.liveTimerId)
+      this.liveTimerId = 0
+    }
+  }
+
   public async startLiveView(): Promise<liveViewManager.LiveViewResult> {
+    // 重复启动时先清理可能残留的旧定时器
+    this.clearTimer()
     // 校验实况窗开关是否打开
     if (!await LiveViewUtil.isLiveViewEnabled()) {
       throw new Error("LiveViewUtil Live view is disabled.");
     }
-    this.liveID = setInterval(async () => {
-      this.updateLiveView()
-    }, 1000)
-    // 创建实况窗
+    // 创建实况窗（成功后才启动刷新定时器，失败路径不产生孤儿定时器）
     const defaultView = await this.buildDefaultView();
     try {
-      return await liveViewManager.startLiveView(defaultView);
+      const result = await liveViewManager.startLiveView(defaultView);
+      this.liveTimerId = setInterval(async () => {
+        try {
+          await this.updateLiveView()
+        } catch (e) {
+          console.error(`LiveViewUtil 实况窗刷新失败: ${(e as Error).message}`)
+        }
+      }, 1000)
+      return result
     } catch (error) {
       throw new Error(error);
     }
@@ -45,7 +71,7 @@ class LiveViewUtil {
     defaultView.liveViewData.primary.title = appConfig.currentProxyName;
     // 实况窗
     defaultView.liveViewData.primary.content = [
-      { text: Xb_GetResourceString($r('app.string.px_sec_screen_use_time'), LiveViewUtil.context) },
+      { text: Xb_GetResourceString($r('app.string.px_sec_screen_use_time'), LiveViewUtil.safeContext()) },
       { text: `: ${proxyStartingDuration}`, textColor: themeColor }, // 运行时间
     ];
     defaultView.liveViewData.primary.layoutData = {
@@ -66,6 +92,8 @@ class LiveViewUtil {
   }
 
   public async stopLiveView(): Promise<liveViewManager.LiveViewResult> {
+    // 先清定时器：即使后续系统接口抛错（如实况窗被系统关闭），定时器也不残留
+    this.clearTimer()
     // 校验实况窗开关是否打开
     if (!await LiveViewUtil.isLiveViewEnabled()) {
       throw new Error("LiveViewUtil Live view is disabled.");
@@ -75,9 +103,6 @@ class LiveViewUtil {
     defaultView.liveViewData.primary.content = [
       { text: 'ClashBox' },
     ];
-    defaultView.id = this.liveID
-    clearInterval(this.liveID)
-    this.liveID = 0
     // 结束实况窗
     try {
       return await liveViewManager.stopLiveView(defaultView);
@@ -92,7 +117,7 @@ class LiveViewUtil {
     const proxyStartingDuration = AppStorage.get<string>('proxyStartingDuration') ?? '0:0:0'
     return {
       // 构造实况窗请求体
-      id: this.liveID, // 实况窗ID，开发者生成
+      id: this.liveViewId, // 实况窗ID，开发者生成
       event: "QUEUE", // 实况窗的应用场景。QUEUE：排队
       timer: {
         time: 620000,
@@ -103,7 +128,7 @@ class LiveViewUtil {
         primary: {
           title: appConfig.currentProxyName,  // 节点名
           content: [
-            { text: Xb_GetResourceString($r('app.string.px_sec_screen_use_time'), LiveViewUtil.context) },
+            { text: Xb_GetResourceString($r('app.string.px_sec_screen_use_time'), LiveViewUtil.safeContext()) },
             { text: `${proxyStartingDuration}`, textColor: themeColor }, // 运行时间
           ], // 设置textColor字段时，所有拥有textColor字段的对象仅能设置同一种颜色，不设置textColor时，默认展示#FF000000
           keepTime: 15,
@@ -131,7 +156,7 @@ class LiveViewUtil {
     const wantAgentInfo: wantAgent.WantAgentInfo = {
       wants: [
         {
-          bundleName: LiveViewUtil.context.applicationInfo.name, // 应用实际bundleName
+          bundleName: LiveViewUtil.safeContext().applicationInfo.name, // 应用实际bundleName
           abilityName: 'EntryAbility'
         } as Want
       ],

@@ -27,6 +27,65 @@ interface TrafficInfo{
 
 
 
+/**
+ * EOF 帧重组器：Go 端 IPC 以 "EOF" 作为帧后缀（单响应连接写一帧后关闭；
+ * 日志等流式连接在同一条连接上连续写多帧）。
+ * 原实现按 chunk 直接 split("EOF")，chunk 边界切断帧或内容内嵌 "EOF" 都会截断消息；
+ * 这里改为跨 chunk 累积缓冲，按帧边界重组完整消息：
+ * 候选帧必须通过 JSON.parse 完整性校验，内容内嵌 "EOF" 时自动顺延到下一个边界重试。
+ */
+class EofFrameBuffer {
+  private buffer: string = ''
+  /** 缓冲上限防御：对端异常/帧永远无法解析时防止内存无限增长（getProxies 大响应在百 KB 级） */
+  private static readonly MAX_BUFFER_BYTES: number = 4 * 1024 * 1024
+
+  /** 压入一个 chunk，返回本轮重组出的全部完整帧 */
+  push(chunk: string): string[] {
+    this.buffer += chunk
+    const frames: string[] = []
+    let searchFrom = 0
+    while (true) {
+      const idx = this.buffer.indexOf('EOF', searchFrom)
+      if (idx < 0) {
+        break
+      }
+      const candidate = this.buffer.substring(0, idx)
+      try {
+        JSON.parse(candidate)
+        frames.push(candidate)
+        this.buffer = this.buffer.substring(idx + 3)
+        searchFrom = 0
+      } catch (_) {
+        // 内容内嵌 "EOF"（如节点名/URL/日志载荷）：不是帧边界，顺延重试
+        searchFrom = idx + 3
+      }
+    }
+    if (this.buffer.length > EofFrameBuffer.MAX_BUFFER_BYTES) {
+      console.error(`EofFrameBuffer 缓冲超限(${this.buffer.length})，丢弃重同步`)
+      this.buffer = ''
+    }
+    return frames
+  }
+
+  /** 连接关闭时的兜底：剩余缓冲去掉尾部 EOF 后若构成完整 JSON 则返回，否则返回 null */
+  flushOnClose(): string | null {
+    let rest = this.buffer
+    this.buffer = ''
+    if (rest.endsWith('EOF')) {
+      rest = rest.substring(0, rest.length - 3)
+    }
+    if (rest.length == 0) {
+      return null
+    }
+    try {
+      JSON.parse(rest)
+      return rest
+    } catch (_) {
+      return null
+    }
+  }
+}
+
 @ObservedV2
 export class SocketProxyService implements IClashManager {
   context?: common.Context
@@ -324,39 +383,57 @@ export class SocketProxyService implements IClashManager {
 
     return new Promise(async (resolve, reject)=>{
       let client: socket.LocalSocket = socket.constructLocalSocketInstance();
-      let fullMessage = '';
-      let timeout = true
-      let timeoutId: number | undefined
-      let parseMessage = debounce((message)=>{
-        timeout = false
-        if (timeoutId !== undefined) clearTimeout(timeoutId)
-        this.ParseMessage(message.replaceAll("}EOF","}"), resolve, reject)
-        message = ''
-        fullMessage = ''
-        client.off('message')
-        client.off('error')
-        client.close()
-      }, 200)
+      const frameBuffer = new EofFrameBuffer()
+      let settled = false
+      let timeoutId: number = -1
+      const cleanup = () => {
+        if (timeoutId != -1) {
+          clearTimeout(timeoutId)
+          timeoutId = -1
+        }
+        try {
+          client.off('message')
+          client.off('error')
+          client.off('close')
+          client.close()
+        } catch (_) {
+        }
+      }
+      const resolveOnce = (value: string | number | boolean | undefined) => {
+        if (settled) return
+        settled = true
+        cleanup()
+        resolve(value)
+      }
+      const rejectOnce = (err: string | Error) => {
+        if (settled) return
+        settled = true
+        cleanup()
+        reject(err)
+      }
       client.on('message', async (value: socket.LocalSocketMessageInfo) => {
+        // 累积缓冲 + 帧边界重组：单响应连接取第一个完整帧即完成
         let chunk = this.textDecoder.decodeToString(new Uint8Array(value.message),  { stream: true })
-        fullMessage += chunk;
-        parseMessage(fullMessage)
+        for (const frame of frameBuffer.push(chunk)) {
+          this.ParseMessage(frame, resolveOnce, rejectOnce)
+          return
+        }
+      })
+      client.on('close', () => {
+        // Go 端写完响应即 defer close：关闭时兜底重组剩余缓冲，避免大响应因 EOF 帧未齐而超时
+        const rest = frameBuffer.flushOnClose()
+        if (rest != null) {
+          this.ParseMessage(rest, resolveOnce, rejectOnce)
+        } else {
+          rejectOnce("连接已关闭，未收到完整响应")
+        }
       })
       const rpcTimeout = (method === ClashRpcType.downloadConfig) ? 15000 : 10000
       timeoutId = setTimeout(()=>{
-        if (timeout) {
-          timeout = false
-          client.off('message')
-          client.off('error')
-          client.close()
-          reject("请求超时")
-        }
+        rejectOnce("请求超时")
       }, rpcTimeout)
       client.on("error", ()=>{
-        if (timeoutId !== undefined) clearTimeout(timeoutId)
-        client.off('message')
-        client.off('error')
-        reject("rpc client error")
+        rejectOnce("rpc client error")
       })
       // {"proxy-name":"♻️自动选择","timeout":3000}
       let socketPath = this.context?.filesDir + '/clash_go.sock'
@@ -365,7 +442,7 @@ export class SocketProxyService implements IClashManager {
         socketPath = this.context?.filesDir + '/ClashBox.sock'
       }
       if(! await fileIo.access(socketPath)){
-        reject("VPN服务未启动")
+        rejectOnce("VPN服务未启动")
         return;
       }
       tryConnect(client, socketPath, 3, 500).then(async ()=>{
@@ -374,7 +451,7 @@ export class SocketProxyService implements IClashManager {
       }).catch((e:Error)=>{
         this.active = false
         this.notifyConnectionRefused(e)
-        reject(e)
+        rejectOnce(e)
       });
     })
   }
@@ -385,24 +462,36 @@ export class SocketProxyService implements IClashManager {
   ): Promise<() => void> {
     return new Promise(async (resolve, reject)=>{
       let tcp: socket.LocalSocket = socket.constructLocalSocketInstance();
+      const frameBuffer = new EofFrameBuffer()
       tcp.on('message', (value: socket.LocalSocketMessageInfo) => {
+        // 流式连接：跨 chunk 累积，按 EOF 帧边界重组（原实现对每个 chunk 直接 split，
+        // chunk 边界切断帧或内容内嵌 EOF 都会丢消息/截断）
         let dd = this.textDecoder.decodeToString(new Uint8Array(value.message))
-        let list = dd.split("EOF")
-        for (let index = 0; index < list.length; index++) {
-          const element = list[index];
+        for (const frame of frameBuffer.push(dd)) {
           try {
-            if (element != ""){
-              let json = JSON.parse(element) as RpcResult
-              callBack(json.result as string)
-            }
+            let json = JSON.parse(frame) as RpcResult
+            callBack(json.result as string)
           }catch (e) {
-            console.error("log error", e.message, element)
+            console.error("log error", e.message, frame)
+          }
+        }
+      })
+      tcp.on('close', () => {
+        // 对端关闭时兜底重组残余缓冲（如 Go 端单帧后即关闭的场景）
+        const rest = frameBuffer.flushOnClose()
+        if (rest != null) {
+          try {
+            let json = JSON.parse(rest) as RpcResult
+            callBack(json.result as string)
+          }catch (e) {
+            console.error("log error", e.message, rest)
           }
         }
       })
       tcp.on('error', (e: Error) => {
         tcp.off('message')
         tcp.off('error')
+        tcp.off('close')
         reject("失败")
       });
       const socketPath = this.context?.filesDir + '/clash_go.sock'
@@ -417,6 +506,7 @@ export class SocketProxyService implements IClashManager {
         resolve(()=>{
           tcp.off('message')
           tcp.off('error')
+          tcp.off('close')
           tcp.close()
         })
       }).catch((e: Error)=>{
@@ -461,16 +551,6 @@ async function tryConnect(
       }
     }
   }
-}
-
-function debounce(func:(json: string)=>void, delay =100) {
-  let timer = 0;
-  return (json: string) => {
-    clearTimeout(timer);
-    timer = setTimeout(() => {
-      func(json);
-    }, delay);
-  };
 }
 
 export default new SocketProxyService()

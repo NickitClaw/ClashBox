@@ -26,6 +26,11 @@ export class Timer {
     } else {
       this.startTime = Date.now() - this.elapsed
     }
+    // 防重复启动累积：先清掉仍在运行的旧定时器
+    if (this.timerId) {
+      clearInterval(this.timerId)
+      this.timerId = undefined
+    }
     this.timerId = setInterval(() => this.updateTimer(), 900)
   }
 
