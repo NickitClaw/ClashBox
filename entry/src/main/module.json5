@@ -105,6 +105,12 @@
         "type": "vpn"
       },
       {
+        // 订阅自动更新延迟任务（WorkScheduler）：系统按网络/循环间隔约束拉起
+        "name": "ConfigUpdateWorkAbility",
+        "srcEntry": "./ets/workschedulerability/ConfigUpdateWorkAbility.ets",
+        "type": "workScheduler"
+      },
+      {
         "name": "EntryBackupAbility",
         "srcEntry": "./ets/entrybackupability/EntryBackupAbility.ets",
         "type": "backup",

@@ -1,26 +1,38 @@
-import { common, Context, WantAgent, wantAgent } from "@kit.AbilityKit";
-import { backgroundTaskManager } from "@kit.BackgroundTasksKit";
+import { common, Context } from "@kit.AbilityKit";
+import { workScheduler } from "@kit.BackgroundTasksKit";
 import { BusinessError } from "@kit.BasicServicesKit";
 import { hilog } from "@kit.PerformanceAnalysisKit";
 import ClashViewModel from "../../entryability/ClashViewModel";
-import { Profile, ProfileType } from "proxy_core";
+import { Profile } from "proxy_core";
 import { convertMillisecondsToTimeGap, DEFAULT_TIMEOUT } from "../entity/Constants";
 import { Xb_GetResourceString, Xb_NotificationUtils } from "xb_components";
 import { notificationManager } from "@kit.NotificationKit";
+import { findAutoUpdateTargets, isProfileUpdateDue } from "./AutoUpdateFilter";
+
+/** 订阅自动更新延迟任务的固定 workId：重复 startWork 同一 workId 即更新任务 */
+const AUTO_UPDATE_WORK_ID: number = 1001
+/**
+ * WorkScheduler 循环任务的最小循环间隔：20 分钟。
+ * 依据：WorkInfo.repeatCycleTime 官方文档与系统约束（小于 20 分钟按 20 分钟执行）；
+ * 且实际执行频率还受应用待机分组限制（活跃分组最小 2 小时、经常使用 4 小时、
+ * 常用 24 小时、极少使用 48 小时、受限分组禁止），因此这里的间隔只是"下限请求"。
+ */
+const MIN_WORK_INTERVAL_MS: number = 20 * 60 * 1000
+/** WorkSchedulerExtensionAbility 名称，与 module.json5 extensionAbilities 声明一致 */
+const WORK_ABILITY_NAME: string = 'ConfigUpdateWorkAbility'
 
 /**
- * 配置自动更新服务
- * 负责定期检查并更新配置文件
+ * 配置自动更新服务（WorkScheduler 版）
+ * 周期性订阅更新已迁移到系统延迟任务（WorkSchedulerExtensionAbility 独立进程执行），
+ * 应用退后台/被杀后仍由系统按约束拉起；本类只负责：
+ * 1. UI 侧注册/更新/停止延迟任务（应用启动、VPN 启动、订阅增删改时调用）
+ * 2. 前台运行时的立即检查（checkNow，含 Toast 与通知）
  */
 export class ConfigAutoUpdateService {
   private context: Context | null = null;
-  /** 定时任务ID */
-  private updateTimerId?: number = undefined;
-  /** 后台任务通知ID */
-  private notificationId?: number = undefined;
-  /** 是否正在更新 */
+  /** 是否正在更新（前台检查防重入） */
   private isUpdating: boolean = false;
-  /** 需要自动更新的配置 */
+  /** 需要自动更新的配置（前台检查用） */
   private autoUpdateProfiles: Profile[] = [];
 
   initContext(context: Context): void {
@@ -29,107 +41,39 @@ export class ConfigAutoUpdateService {
   }
 
   /**
-   * 启动配置自动更新服务
-   * @param context 应用上下文
+   * 启动配置自动更新服务：立即执行一次前台检查，并按订阅勾选情况注册/停止延迟任务
    */
   async start(): Promise<void> {
-    if (this.updateTimerId) {
-      hilog.debug(0xFF00, "ConfigAutoUpdateService", "配置自动更新服务已在运行");
-      return;
-    }
-
     hilog.warn(0xFF00, "ConfigAutoUpdateService", "启动配置自动更新服务");
-
-    try { // 立即执行一次检查
+    // 立即执行一次前台检查（没有需要更新的配置时仅记录日志，不视为失败）
+    try {
       await this.checkAndUpdateConfigs();
     } catch (e) {
-      return Promise.reject(e);
+      hilog.warn(0xFF00, "ConfigAutoUpdateService", `启动时立即检查跳过: ${e}`)
     }
-
-    // 启动后台长时任务
-    // const notificationId = await this.startContinuousTask();
-    // if (notificationId > 0) {
-    //   this.notificationId = notificationId;
-    // }
-
-    // 找出更新频率最快的配置的毫秒值
-    const updateIntervalArray: number[] = this.autoUpdateProfiles.map((profile: Profile) => {
-      // 小于1分钟的重置为默认值并更新一次数据库
-      if (profile.autoUpdateDuration < DEFAULT_TIMEOUT) {
-        profile.autoUpdateDuration = DEFAULT_TIMEOUT; // 默认1分钟
-        ClashViewModel.updateProfile(profile);
-      }
-
-      return profile.autoUpdateDuration;
-    })
-
-    const updateInterval: number = Math.min(...updateIntervalArray) // 默认1分钟
-
-    // 启动定时任务
-    this.updateTimerId = setInterval(async () => {
-      await this.checkAndUpdateConfigs();
-    }, updateInterval);
-
+    await this.refreshWorkRegistration();
     hilog.warn(0xFF00, "ConfigAutoUpdateService", "配置自动更新服务启动成功");
   }
 
   /**
-   * 停止配置自动更新服务
-   * @param context 应用上下文
+   * 停止配置自动更新服务：取消已注册的延迟任务
+   * （仅供内部在"无订阅勾选自动更新"时调用；UI 进程销毁不应停止系统级延迟任务）
    */
   async stop(): Promise<void> {
-    if (!this.context) {
-      hilog.error(0xFF00, "ConfigAutoUpdateService", "关闭后台长时任务失败，请检查应用上下文");
-      return Promise.reject("请检查应用上下文");
-    }
-
-    hilog.error(0xFF00, "ConfigAutoUpdateService", "停止配置自动更新服务");
-
-    // 清除定时器
-    if (this.updateTimerId) {
-      clearInterval(this.updateTimerId);
-      this.updateTimerId = undefined;
-    }
-
-    // 停止后台任务
-    // if (this.notificationId) {
-    //   try {
-    //     await backgroundTaskManager.stopBackgroundRunning(this.context, this.notificationId);
-    //     this.notificationId = undefined;
-    //     hilog.info(0xFF00, "ConfigAutoUpdateService", "后台任务停止成功");
-    //   } catch (err) {
-    //     hilog.error(0xFF00, "ConfigAutoUpdateService",
-    //       `后台任务停止失败: ${JSON.stringify(err)}`);
-    //   }
-    // }
-
+    hilog.warn(0xFF00, "ConfigAutoUpdateService", "停止配置自动更新服务");
+    this.cancelWork();
     hilog.info(0xFF00, "ConfigAutoUpdateService", "配置自动更新服务已停止");
   }
 
   /**
-   * 重置配置自动更新服务
+   * 重置配置自动更新服务：订阅增删改后重新评估注册（无勾选自动更新时停止任务）
    */
   async reset() {
-    if (!this.updateTimerId) {
-      hilog.info(0xFF00, "ConfigAutoUpdateService", "配置自动更新服务已处于停止状态");
-      // 没启动过 -> 执行一次检查是否需要开启自动更新
-      try {
-        await this.start();
-      } catch (error) {
-        hilog.error(0xFF00, 'ConfigAutoUpdateService',
-          `配置自动更新服务启动失败 - ${JSON.stringify(error)}`);
-      }
-      return;
-    }
-
-    hilog.warn(0xFF00, "ConfigAutoUpdateService", "重置配置自动更新服务");
-
     try {
-      await this.stop();
-      await this.start();
+      await this.refreshWorkRegistration();
     } catch (error) {
       hilog.error(0xFF00, 'ConfigAutoUpdateService',
-        `配置自动更新服务启动失败 - ${JSON.stringify(error)}`);
+        `配置自动更新服务重置失败 - ${JSON.stringify(error)}`);
     }
   }
 
@@ -142,7 +86,75 @@ export class ConfigAutoUpdateService {
   }
 
   /**
-   * 检查并更新所有需要自动更新的配置
+   * 按当前订阅勾选情况注册/更新/停止 WorkScheduler 延迟任务。
+   * 约束：NETWORK_TYPE_ANY + 不限充电状态 + 循环间隔取用户配置与系统最小间隔（20 分钟）的较大值。
+   */
+  private async refreshWorkRegistration(): Promise<void> {
+    const profiles = await ClashViewModel.getProfiles();
+    const targets = findAutoUpdateTargets(profiles);
+    if (targets.length == 0) {
+      hilog.info(0xFF00, "ConfigAutoUpdateService", "没有勾选自动更新的订阅，停止延迟任务");
+      this.cancelWork();
+      return;
+    }
+    // 找出更新频率最快的配置的毫秒值
+    const updateIntervalArray: number[] = targets.map((profile: Profile) => {
+      // 小于1分钟的重置为默认值并更新一次数据库
+      if (profile.autoUpdateDuration < DEFAULT_TIMEOUT) {
+        profile.autoUpdateDuration = DEFAULT_TIMEOUT; // 默认1分钟
+        ClashViewModel.updateProfile(profile);
+      }
+      return profile.autoUpdateDuration;
+    })
+    // 循环间隔取用户配置与系统最小间隔（20 分钟）的较大值
+    const userInterval: number = Math.min(...updateIntervalArray)
+    const repeatCycleTime = Math.max(userInterval, MIN_WORK_INTERVAL_MS)
+    const bundleName = this.context?.applicationInfo.name ?? ''
+    const workInfo: workScheduler.WorkInfo = {
+      workId: AUTO_UPDATE_WORK_ID,
+      bundleName: bundleName,
+      abilityName: WORK_ABILITY_NAME,
+      networkType: workScheduler.NetworkType.NETWORK_TYPE_ANY,
+      isCharging: false, // 充电状态不限
+      isRepeat: true,
+      repeatCycleTime: repeatCycleTime,
+      isPersisted: true // 重启后恢复任务
+    }
+    try {
+      // 先取消旧任务再注册，保证 repeatCycleTime 变更生效
+      workScheduler.stopWork(workInfo, true);
+    } catch (e) {
+      // 任务不存在时 stopWork 抛错属正常路径
+      hilog.debug(0xFF00, "ConfigAutoUpdateService", `取消旧延迟任务(可能不存在): ${(e as BusinessError).code}`)
+    }
+    try {
+      workScheduler.startWork(workInfo);
+      hilog.warn(0xFF00, "ConfigAutoUpdateService",
+        `订阅自动更新延迟任务已注册：间隔 ${repeatCycleTime / 60000} 分钟（用户配置 ${userInterval / 60000} 分钟）`)
+    } catch (e) {
+      const err = e as BusinessError;
+      hilog.error(0xFF00, "ConfigAutoUpdateService",
+        `注册订阅自动更新延迟任务失败: code=${err.code}, msg=${err.message}`)
+    }
+  }
+
+  private cancelWork(): void {
+    const bundleName = this.context?.applicationInfo.name ?? ''
+    const workInfo: workScheduler.WorkInfo = {
+      workId: AUTO_UPDATE_WORK_ID,
+      bundleName: bundleName,
+      abilityName: WORK_ABILITY_NAME
+    }
+    try {
+      workScheduler.stopWork(workInfo, true);
+      hilog.info(0xFF00, "ConfigAutoUpdateService", "订阅自动更新延迟任务已停止")
+    } catch (e) {
+      hilog.debug(0xFF00, "ConfigAutoUpdateService", `停止延迟任务(可能不存在): ${(e as BusinessError).code}`)
+    }
+  }
+
+  /**
+   * 前台检查并更新所有需要自动更新的配置（含 Toast 与结果通知；后台周期更新由 WorkSchedulerExtensionAbility 执行）
    */
   private async checkAndUpdateConfigs(): Promise<void> {
     // 防止重复执行
@@ -161,9 +173,7 @@ export class ConfigAutoUpdateService {
       hilog.info(0xFF00, "ConfigAutoUpdateService", `获取到 ${profiles.length} 个配置`);
 
       // 筛选需要自动更新的配置
-      this.autoUpdateProfiles = profiles.filter((profile: Profile) => {
-        return profile.autoUpdate && profile.type === ProfileType.Url;
-      });
+      this.autoUpdateProfiles = findAutoUpdateTargets(profiles);
 
       hilog.info(0xFF00, "ConfigAutoUpdateService",
         `需要自动更新的配置数量: ${this.autoUpdateProfiles.length}`);
@@ -179,10 +189,6 @@ export class ConfigAutoUpdateService {
       for (const profile of this.autoUpdateProfiles) {
         try {
           const updateInterval = profile.autoUpdateDuration
-          // 忽略小于等于0的间隔
-          if (updateInterval <= 0) {
-            return
-          }
 
           const lastUpdateTime = profile.lastUpdateDate || 0;
           const timeSinceLastUpdate = now - lastUpdateTime;
@@ -202,18 +208,13 @@ export class ConfigAutoUpdateService {
               break;
           }
 
-          // 更新间隔 => 允许5秒误差
-          const tolerance = 5 * 1000;
-          const updateThreshold = updateInterval - tolerance;
-
           hilog.info(0xFF00, "ConfigAutoUpdateService",
             `配置 [${profile.name}] - 上次更新: ${new Date(lastUpdateTime).toLocaleString()}, ` +
               `更新间隔: ${updateInterval} - ${updateIntervalStr}, 距离上次更新: ${Math.floor(timeSinceLastUpdate /
-                1000 / 60)}分钟, ` +
-              `允许误差: ${tolerance / 1000}秒`);
+                1000 / 60)}分钟`);
 
-          // 判断是否需要更新
-          if (timeSinceLastUpdate >= updateThreshold) {
+          // 判断是否需要更新（含 5 秒误差容忍，与后台任务一致）
+          if (isProfileUpdateDue(profile, now)) {
             hilog.info(0xFF00, "ConfigAutoUpdateService",
               `配置 [${profile.name}] 需要更新，开始更新...`);
 
@@ -272,50 +273,6 @@ export class ConfigAutoUpdateService {
       this.isUpdating = false;
     }
   }
-
-  /**
-   *  启动后台长时任务
-   * @param context 应用上下文
-   * @returns 通知ID
-   */
-  private async startContinuousTask(): Promise<number> {
-    if (!this.context) {
-      hilog.error(0xFF00, "ConfigAutoUpdateService", "启动后台长时任务失败，请检查应用上下文");
-      return -1;
-    }
-
-    const context = this.context;
-
-    const wantAgentInfo: wantAgent.WantAgentInfo = {
-      wants: [
-        {
-          bundleName: context.applicationInfo.name,
-          abilityName: "EntryAbility",
-        },
-      ],
-      actionType: wantAgent.OperationType.START_ABILITY,
-      requestCode: 0,
-      actionFlags: [wantAgent.WantAgentFlags.UPDATE_PRESENT_FLAG],
-    };
-
-    try {
-      const wantAgentObj: WantAgent = await wantAgent.getWantAgent(wantAgentInfo);
-      const result = await backgroundTaskManager.startBackgroundRunning(
-        context,
-        ["dataTransfer"], // 使用数据传输类型
-        wantAgentObj
-      );
-      hilog.info(0xFF00, "ConfigAutoUpdateService",
-        `后台长时任务启动成功, notificationId=${result.notificationId}`);
-      return result.notificationId;
-    } catch (err) {
-      const error = err as BusinessError;
-      hilog.error(0xFF00, "ConfigAutoUpdateService",
-        `后台长时任务启动失败: Code=${error.code}, Msg=${error.message}`);
-      return -1;
-    }
-  }
 }
 
 export default new ConfigAutoUpdateService();
-
