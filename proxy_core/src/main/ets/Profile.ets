@@ -1,3 +1,4 @@
+import { BusinessError } from '@kit.BasicServicesKit';
 import fs from '@ohos.file.fs';
 import { getProfileDir, getProfilePath, getProfilesPath } from './appPath';
 import { Context } from '@kit.AbilityKit';
@@ -51,6 +52,32 @@ export class Profile {
   fixTlsFingerprint: boolean = true
   // YAML 覆写片段(entry 层注入, 所有配置生成路径统一应用深度合并)
   yamlOverride: string = ''
+  shouldCancelUpdate?: () => boolean
+
+  private async withProfileLock<T>(operation: () => Promise<T>): Promise<T> {
+    const directory = await getProfilesPath(this.context);
+    // Persistent lock inode: deleting/unlinking it would allow two owners.
+    const lock = await fs.open(`${directory}/${this.id}.lock`, fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE);
+    let acquired = false;
+    try {
+      const deadline = Date.now() + 60000;
+      while (!acquired) {
+        if (this.shouldCancelUpdate?.()) throw new Error('订阅更新已取消');
+        try {
+          lock.tryLock(true);
+          acquired = true;
+        } catch (e) {
+          if ((e as BusinessError).code !== 13900034) throw e as Error;
+          if (Date.now() >= deadline) throw new Error('配置正在被另一个任务修改，请稍后重试');
+          await new Promise<void>((resolve) => { setTimeout(resolve, 50); });
+        }
+      }
+      if (this.shouldCancelUpdate?.()) throw new Error('订阅更新已取消');
+      return await operation();
+    } finally {
+      try { if (acquired) lock.unlock(); } finally { await fs.close(lock.fd); }
+    }
+  }
 
   constructor(type = ProfileType.Url, url: string) {
     this.id = generateUUID()
@@ -83,6 +110,10 @@ export class Profile {
   }
 
   async delete(): Promise<void> {
+    return this.withProfileLock(() => this.deleteUnlocked());
+  }
+
+  private async deleteUnlocked(): Promise<void> {
     if (!await this.check()) return
     const profileDir = await getProfilesPath(this.context)
     const profilePath = await getProfilePath(this.context, this.id);
@@ -103,9 +134,13 @@ export class Profile {
   }
 
   async update(socketProxy: SocketProxyService, customRules: string[] = [], deleteRules: string[] = []): Promise<boolean> {
-    console.debug(`[Profile] UpdateConfig this.url: ${this.url}`);
+    return this.withProfileLock(() => this.updateUnlocked(socketProxy, customRules, deleteRules));
+  }
+
+  private async updateUnlocked(socketProxy: SocketProxyService, customRules: string[], deleteRules: string[]): Promise<boolean> {
+    console.debug(`[Profile] 更新订阅 id=${this.id}`);
     const requestUa = this.globalUa ?? "clash-verge/v2.5.1";
-    const tempYamlPath = this.context?.tempDir + "/temp.yaml";
+    const tempYamlPath = this.context!.tempDir + `/subscription-${generateUUID()}.yaml`;
 
     const maxRetries = 2;
     let lastError: Error | null = null;
@@ -115,6 +150,7 @@ export class Profile {
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
+        if (this.shouldCancelUpdate?.()) throw new Error('订阅更新已取消');
         let result: string;
         if (!nativeFailed) {
           try {
@@ -162,8 +198,8 @@ export class Profile {
           }
 
           if (trimmedStr.length < 200) {
-            console.error(`[Profile] UpdateConfig 内容过短: ${trimmedStr}`);
-            throw new Error(`订阅返回内容过短（${trimmedStr.length}字节），疑似错误响应:${trimmedStr.substring(0, 100)}`);
+            console.error(`[Profile] 订阅内容过短: ${trimmedStr.length}`);
+            throw new Error(`订阅返回内容过短（${trimmedStr.length}字节），疑似错误响应`);
           }
 
           const convertedYaml = YamlUtils.convertUniversalToClashYaml(configContent);
@@ -176,9 +212,9 @@ export class Profile {
 
           let finalStr = convertedYaml ? convertedYaml : configContent;
 
-          await this.save(finalStr, async (config)=> await socketProxy.vailConfig(config), customRules, deleteRules);
+          await this.saveUnlocked(finalStr, async (config)=> await socketProxy.vailConfig(config), customRules, deleteRules);
         // 清理备份配置
-          this.cleanScriptBackup()
+          await this.cleanScriptBackup()
 
           // 成功完成后清理临时文件
           try { await fs.unlink(tempYamlPath); } catch (_) {}
@@ -194,6 +230,7 @@ export class Profile {
           }
         } catch (_) {}
 
+        if (this.shouldCancelUpdate?.()) throw lastError;
         if (attempt < maxRetries) {
           console.warn(`[Profile] UpdateConfig 第${attempt}次下载失败: ${lastError.message}，${1000}ms后重试...`);
           await new Promise<void>(resolve => setTimeout(resolve, 1000));
@@ -321,6 +358,15 @@ export class Profile {
     customRules: string[] = [],
     deleteRules: string[] = [],
     scriptContent: string = ""): Promise<Profile> {
+    return this.withProfileLock(() => this.saveUnlocked(raw, vailConfig, customRules, deleteRules, scriptContent));
+  }
+
+  private async saveUnlocked(
+    raw: string | ArrayBuffer,
+    vailConfig: (config: string) => Promise<string>,
+    customRules: string[] = [],
+    deleteRules: string[] = [],
+    scriptContent: string = ""): Promise<Profile> {
     let rawStr: string;
     if (typeof raw == "string") {
       rawStr = raw;
@@ -352,24 +398,31 @@ export class Profile {
     // 编码并写入临时文件
     let bytes = utf8e.encodeInto(finalStr);
     const filePath = await getProfilePath(this.context, this.id);
-    const tempPath = this.context!.tempDir + "/temp.config";
-    const temp = await fs.open(tempPath, fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE | fs.OpenMode.TRUNC);
-    await fs.write(temp.fd, bytes.buffer);
-    await fs.close(temp.fd);
-
-    // 内核校验
-    console.debug(`[Profile][VailTrace] before vailConfig t=${Date.now()} path=${tempPath}`);
-    let message = await vailConfig(tempPath);
-    console.debug(`[Profile][VailTrace] after vailConfig t=${Date.now()} message=${message}`);
-    await fs.unlink(tempPath);
-    if (message != "") {
-      throw new Error(message);
+    // A unique sibling is validated and renamed, so the committed bytes are exactly
+    // those validated, and readers always see a complete old or new configuration.
+    const tempPath = `${filePath}.${generateUUID()}.tmp`;
+    try {
+      const temp = await fs.open(tempPath, fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE | fs.OpenMode.TRUNC);
+      try {
+        const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+        let written = 0;
+        while (written < buffer.byteLength) {
+          const count = await fs.write(temp.fd, buffer.slice(written));
+          if (count <= 0) throw new Error('配置文件写入失败');
+          written += count;
+        }
+        await fs.fsync(temp.fd);
+      } finally {
+        await fs.close(temp.fd);
+      }
+      const message = await vailConfig(tempPath);
+      if (message !== '') throw new Error(message);
+      if (this.shouldCancelUpdate?.()) throw new Error('订阅更新已取消');
+      await fs.rename(tempPath, filePath);
+    } finally {
+      try { await fs.unlink(tempPath); } catch (_) {}
     }
 
-    // 校验通过，写入正式文件
-    const file = await fs.open(filePath, fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE | fs.OpenMode.TRUNC);
-    await fs.write(file.fd, bytes.buffer);
-    await fs.close(file.fd);
     this.lastUpdateDate = new Date().getTime();
     return this;
   }

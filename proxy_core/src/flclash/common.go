@@ -219,6 +219,7 @@ func overrideRules(rules *[]string) {
 
 func overwriteConfig(targetConfig *config.RawConfig, patchConfig config.RawConfig) {
 	targetConfig.ExternalController = patchConfig.ExternalController
+	targetConfig.Secret = patchConfig.Secret
 	targetConfig.ExternalUI = patchConfig.ExternalUI
 	// 	targetConfig.Interface = ""
 	targetConfig.ExternalUIURL = patchConfig.ExternalUIURL
@@ -252,9 +253,6 @@ func overwriteConfig(targetConfig *config.RawConfig, patchConfig config.RawConfi
 	}
 	// ★ Tunnel 流量转发: 从 UI 配置透传到内核(与 mihomo tunnels 段字段一致)
 	targetConfig.Tunnels = patchConfig.Tunnels
-	if patchConfig.App != nil {
-		targetConfig.App = patchConfig.App
-	}
 
 	if configParams.TestURL != nil {
 		constant.DefaultTestURL = *configParams.TestURL

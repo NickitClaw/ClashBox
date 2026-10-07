@@ -1,3 +1,4 @@
+import { encodeRpcFrame } from './RpcFrame';
 import { socket, vpnExtension } from "@kit.NetworkKit";
 import { common } from "@kit.AbilityKit";
 
@@ -57,9 +58,10 @@ export abstract class CommonVpnService{
     this.context = context
   }
   async sendClient(client: socket.LocalSocketConnection, message: string){
-    await client.send({data: message + "EOF", encoding:"utf-8", })
+    await client.send({data: encodeRpcFrame(message), })
   }
   abstract onRemoteMessageRequest(client: socket.LocalSocketConnection, message: socket.LocalSocketMessageInfo): Promise<void>
+  onClientClosed(clientId: number): void {}
   abstract init()
   async getTunFd(config: VpnConfig): Promise<number> {
     let tunFd = -1
@@ -70,7 +72,8 @@ export abstract class CommonVpnService{
       return tunFd;
     } catch (error) {
       console.log("ClashVPN", `Clash启动失败 ${error.message} => ${error.stack}` )
-      this.vpnConnection?.destroy()
+      await this.vpnConnection?.destroy()
+      this.vpnConnection = undefined
       return -1
     }
   }
@@ -81,11 +84,12 @@ export abstract class CommonVpnService{
     await this.vpnConnection.protect(fd)
   }
   abstract startVpn(): Promise<boolean>
-  stopVpn(){
+  async stopVpn(): Promise<boolean> {
     if(this.vpnConnection){
-      this.vpnConnection.destroy()
+      await this.vpnConnection.destroy()
       this.vpnConnection = undefined
     }
+    return true
   }
 }
 

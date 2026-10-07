@@ -3,7 +3,7 @@
 	url = https://github.com/xfz347/Clash.Meta.git
 [submodule "proxy_core/src/flclash/gvisor-ohos"]
 	path = proxy_core/src/flclash/gvisor-ohos
-	url = https://github.com/likuai2010/gvisor-ohos.git
+	url = https://github.com/MetaCubeX/gvisor.git
 [submodule "xb_components"]
 	path = xb_components
 	url = https://gitee.com/xiaobai-studio/xb_components.git

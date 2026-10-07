@@ -1,3 +1,4 @@
+import { encodeRpcFrame, RpcFrameBuffer } from './RpcFrame';
 import { socket, vpnExtension } from '@kit.NetworkKit';
 import {  RpcResult } from './RpcRequest';
 import { JSON, util } from '@kit.ArkTS';
@@ -27,71 +28,11 @@ interface TrafficInfo{
 
 
 
-/**
- * EOF 帧重组器：Go 端 IPC 以 "EOF" 作为帧后缀（单响应连接写一帧后关闭；
- * 日志等流式连接在同一条连接上连续写多帧）。
- * 原实现按 chunk 直接 split("EOF")，chunk 边界切断帧或内容内嵌 "EOF" 都会截断消息；
- * 这里改为跨 chunk 累积缓冲，按帧边界重组完整消息：
- * 候选帧必须通过 JSON.parse 完整性校验，内容内嵌 "EOF" 时自动顺延到下一个边界重试。
- */
-class EofFrameBuffer {
-  private buffer: string = ''
-  /** 缓冲上限防御：对端异常/帧永远无法解析时防止内存无限增长（getProxies 大响应在百 KB 级） */
-  private static readonly MAX_BUFFER_BYTES: number = 4 * 1024 * 1024
-
-  /** 压入一个 chunk，返回本轮重组出的全部完整帧 */
-  push(chunk: string): string[] {
-    this.buffer += chunk
-    const frames: string[] = []
-    let searchFrom = 0
-    while (true) {
-      const idx = this.buffer.indexOf('EOF', searchFrom)
-      if (idx < 0) {
-        break
-      }
-      const candidate = this.buffer.substring(0, idx)
-      try {
-        JSON.parse(candidate)
-        frames.push(candidate)
-        this.buffer = this.buffer.substring(idx + 3)
-        searchFrom = 0
-      } catch (_) {
-        // 内容内嵌 "EOF"（如节点名/URL/日志载荷）：不是帧边界，顺延重试
-        searchFrom = idx + 3
-      }
-    }
-    if (this.buffer.length > EofFrameBuffer.MAX_BUFFER_BYTES) {
-      console.error(`EofFrameBuffer 缓冲超限(${this.buffer.length})，丢弃重同步`)
-      this.buffer = ''
-    }
-    return frames
-  }
-
-  /** 连接关闭时的兜底：剩余缓冲去掉尾部 EOF 后若构成完整 JSON 则返回，否则返回 null */
-  flushOnClose(): string | null {
-    let rest = this.buffer
-    this.buffer = ''
-    if (rest.endsWith('EOF')) {
-      rest = rest.substring(0, rest.length - 3)
-    }
-    if (rest.length == 0) {
-      return null
-    }
-    try {
-      JSON.parse(rest)
-      return rest
-    } catch (_) {
-      return null
-    }
-  }
-}
-
 @ObservedV2
 export class SocketProxyService implements IClashManager {
   context?: common.Context
   active: boolean = false
   @Trace offlineTime: number[] = []
-  private textDecoder: util.TextDecoder = new util.TextDecoder()
   /**
    * Go IPC socket 连接被拒(Connection refused)时的全局回调,
    * 由 ClashViewModel 注册为自动重建 VPN 进程。任意 RPC(含测速)失败都会触发,
@@ -367,11 +308,11 @@ export class SocketProxyService implements IClashManager {
       if (!json.error || json.error == "")
         resolve(json.result)
       else{
-        console.warn(`ParseMessage error: method=${json.result} error=${json.error}`)
+        console.warn(`ParseMessage error: error=${json.error}`)
         reject(json.error)
       }
     } catch (e) {
-      console.error("ParseMessage", e, messageBuffer)
+      console.error("ParseMessage: invalid RPC response")
       reject("JSON解码失败: " + JSON.stringify(e))
     }
   }
@@ -381,141 +322,93 @@ export class SocketProxyService implements IClashManager {
   ): Promise<string| number | boolean | undefined>{
     console.log("sendMessageRequest " + method)
 
-    return new Promise(async (resolve, reject)=>{
-      let client: socket.LocalSocket = socket.constructLocalSocketInstance();
-      const frameBuffer = new EofFrameBuffer()
-      let settled = false
-      let timeoutId: number = -1
+    return new Promise((resolve, reject) => {
+      const client = socket.constructLocalSocketInstance();
+      const frames = new RpcFrameBuffer();
+      let settled = false;
+      let timeoutId = -1;
       const cleanup = () => {
-        if (timeoutId != -1) {
-          clearTimeout(timeoutId)
-          timeoutId = -1
-        }
+        clearTimeout(timeoutId);
+        closeRpcSocket(client);
+      };
+      const fail = (error: Error | string) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        const err = error instanceof Error ? error : new Error(error);
+        this.notifyConnectionRefused(err);
+        reject(err);
+      };
+      const succeed = (value: string | number | boolean | undefined) => {
+        if (settled) return;
+        settled = true;
+        cleanup(); resolve(value);
+      };
+      client.on('message', (value: socket.LocalSocketMessageInfo) => {
         try {
-          client.off('message')
-          client.off('error')
-          client.off('close')
-          client.close()
-        } catch (_) {
-        }
-      }
-      const resolveOnce = (value: string | number | boolean | undefined) => {
-        if (settled) return
-        settled = true
-        cleanup()
-        resolve(value)
-      }
-      const rejectOnce = (err: string | Error) => {
-        if (settled) return
-        settled = true
-        cleanup()
-        reject(err)
-      }
-      client.on('message', async (value: socket.LocalSocketMessageInfo) => {
-        // 累积缓冲 + 帧边界重组：单响应连接取第一个完整帧即完成
-        let chunk = this.textDecoder.decodeToString(new Uint8Array(value.message),  { stream: true })
-        for (const frame of frameBuffer.push(chunk)) {
-          this.ParseMessage(frame, resolveOnce, rejectOnce)
-          return
-        }
-      })
-      client.on('close', () => {
-        // Go 端写完响应即 defer close：关闭时兜底重组剩余缓冲，避免大响应因 EOF 帧未齐而超时
-        const rest = frameBuffer.flushOnClose()
-        if (rest != null) {
-          this.ParseMessage(rest, resolveOnce, rejectOnce)
-        } else {
-          rejectOnce("连接已关闭，未收到完整响应")
-        }
-      })
-      const rpcTimeout = (method === ClashRpcType.downloadConfig) ? 15000 : 10000
-      timeoutId = setTimeout(()=>{
-        rejectOnce("请求超时")
-      }, rpcTimeout)
-      client.on("error", ()=>{
-        rejectOnce("rpc client error")
-      })
-      // {"proxy-name":"♻️自动选择","timeout":3000}
-      let socketPath = this.context?.filesDir + '/clash_go.sock'
-      // || method == ClashRpcType.getRuntime 在clash_go里已实现,
-      if (method == ClashRpcType.startClash || method == ClashRpcType.stopClash){
-        socketPath = this.context?.filesDir + '/ClashBox.sock'
-      }
-      if(! await fileIo.access(socketPath)){
-        rejectOnce("VPN服务未启动")
-        return;
-      }
-      tryConnect(client, socketPath, 3, 500).then(async ()=>{
-        this.active = true
-        client.send({ data: JSON.stringify({method, params}) });
-      }).catch((e:Error)=>{
-        this.active = false
-        this.notifyConnectionRefused(e)
-        rejectOnce(e)
+          for (const frame of frames.push(new Uint8Array(value.message))) {
+            this.ParseMessage(frame, succeed, fail);
+            break;
+          }
+        } catch (e) { fail(e as Error); }
       });
-    })
+      client.on('close', () => { fail('连接已关闭，未收到完整响应'); });
+      client.on('error', (e: Error) => { fail(e); });
+      timeoutId = setTimeout(() => { fail('RPC 请求超时'); }, 60000);
+      const connect = async (): Promise<void> => {
+        let path = this.context?.filesDir + '/clash_go.sock';
+        if (method === ClashRpcType.startClash || method === ClashRpcType.stopClash) {
+          path = this.context?.filesDir + '/ClashBox.sock';
+        }
+        if (!await fileIo.access(path)) throw new Error('VPN服务未启动');
+        if (settled) return;
+        await tryConnect(client, path, 3, 500);
+        if (settled) { client.close().catch(() => {}); return; }
+        this.active = true;
+        await client.send({ data: encodeRpcFrame(JSON.stringify({ method, params })) });
+      };
+      connect().catch((e: Error) => { this.active = false; fail(e); });
+    });
   }
+
   async callbackRequest(
     method: number,
-    params: (string | number | boolean) [] = [],
+    params: (string | number | boolean)[] = [],
     callBack: (message: string) => void
   ): Promise<() => void> {
-    return new Promise(async (resolve, reject)=>{
-      let tcp: socket.LocalSocket = socket.constructLocalSocketInstance();
-      const frameBuffer = new EofFrameBuffer()
-      tcp.on('message', (value: socket.LocalSocketMessageInfo) => {
-        // 流式连接：跨 chunk 累积，按 EOF 帧边界重组（原实现对每个 chunk 直接 split，
-        // chunk 边界切断帧或内容内嵌 EOF 都会丢消息/截断）
-        let dd = this.textDecoder.decodeToString(new Uint8Array(value.message))
-        for (const frame of frameBuffer.push(dd)) {
-          try {
-            let json = JSON.parse(frame) as RpcResult
-            callBack(json.result as string)
-          }catch (e) {
-            console.error("log error", e.message, frame)
-          }
+    const client = socket.constructLocalSocketInstance();
+    const frames = new RpcFrameBuffer();
+    let closed = false;
+    const cleanup = () => {
+      if (closed) return;
+      closed = true;
+      closeRpcSocket(client);
+    };
+    client.on('message', (value: socket.LocalSocketMessageInfo) => {
+      try {
+        for (const frame of frames.push(new Uint8Array(value.message))) {
+          const response = JSON.parse(frame) as RpcResult;
+          if (response.error) throw new Error(response.error);
+          callBack(response.result as string);
         }
-      })
-      tcp.on('close', () => {
-        // 对端关闭时兜底重组残余缓冲（如 Go 端单帧后即关闭的场景）
-        const rest = frameBuffer.flushOnClose()
-        if (rest != null) {
-          try {
-            let json = JSON.parse(rest) as RpcResult
-            callBack(json.result as string)
-          }catch (e) {
-            console.error("log error", e.message, rest)
-          }
-        }
-      })
-      tcp.on('error', (e: Error) => {
-        tcp.off('message')
-        tcp.off('error')
-        tcp.off('close')
-        reject("失败")
-      });
-      const socketPath = this.context?.filesDir + '/clash_go.sock'
-      // 与 sendMessageRequest 保持一致：先检查 socket 文件是否存在，再带重试连接，
-      // 解决启动时 socket 文件已存在但服务端尚未 listen 的竞态问题，避免日志订阅静默失败
-      if (!await fileIo.access(socketPath)) {
-        reject("VPN服务未启动")
-        return;
-      }
-      tryConnect(tcp, socketPath, 3, 500).then(()=>{
-        tcp.send({ data: JSON.stringify({method, params}) });
-        resolve(()=>{
-          tcp.off('message')
-          tcp.off('error')
-          tcp.off('close')
-          tcp.close()
-        })
-      }).catch((e: Error)=>{
-        console.log("socketProxy error", e.message)
-        this.notifyConnectionRefused(e)
-        reject(e)
-      });
-    })
+      } catch (_) { cleanup(); }
+    });
+    client.on('close', cleanup);
+    client.on('error', (e: Error) => { cleanup(); this.notifyConnectionRefused(e); });
+    try {
+      const path = this.context?.filesDir + '/clash_go.sock';
+      if (!await fileIo.access(path)) throw new Error('VPN服务未启动');
+      await tryConnect(client, path, 3, 500);
+      if (closed) throw new Error('RPC 连接已关闭');
+      await client.send({ data: encodeRpcFrame(JSON.stringify({ method, params })) });
+      return cleanup;
+    } catch (e) {
+      cleanup();
+      this.notifyConnectionRefused(e as Error);
+      throw e as Error;
+    }
   }
+
 }
 
 /**
@@ -547,10 +440,17 @@ async function tryConnect(
         console.warn(`tryConnect 第 ${attempt} 次连接被拒，${delayMs}ms 后重试 (path=${socketPath})`);
         await new Promise<void>((r: Function) => { setTimeout(r, delayMs); });
       } else {
-        throw e as Error; // 最后一次或非 Connection refused 错误，直接抛出
+        throw e as Error as Error; // 最后一次或非 Connection refused 错误，直接抛出
       }
     }
   }
 }
 
 export default new SocketProxyService()
+
+function closeRpcSocket(client: socket.LocalSocket): void {
+  try { client.off('message') } catch (_) {}
+  try { client.off('error') } catch (_) {}
+  try { client.off('close') } catch (_) {}
+  try { client.close().catch(() => {}) } catch (_) {}
+}

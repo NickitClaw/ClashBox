@@ -20,17 +20,25 @@ export class ProfileRepo {
     try {
       this.store = await relationalStore.getRdbStore(context, STORE_CONFIG);
       const versionRs = await this.store.querySql('PRAGMA user_version;');
-      versionRs.goToNextRow();
-      const currentVersion = versionRs.getLong(0);
-      versionRs.close();
+      let currentVersion: number;
+      try {
+        versionRs.goToNextRow();
+        currentVersion = versionRs.getLong(0);
+      } finally {
+        versionRs.close();
+      }
 
       const tableRs = await this.store.querySql("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='Profiles'");
-      tableRs.goToNextRow();
-      const isTableExist = tableRs.getLong(0) > 0;
-      tableRs.close();
+      let isTableExist: boolean;
+      try {
+        tableRs.goToNextRow();
+        isTableExist = tableRs.getLong(0) > 0;
+      } finally {
+        tableRs.close();
+      }
 
       if (!isTableExist) {
-        this.initDb();
+        await this.initDb();
         await this.store.executeSql(`PRAGMA user_version = ${DB_VERSION};`);
       } else if (currentVersion < DB_VERSION) {
         await this.upgradeDatabase(currentVersion);
@@ -72,7 +80,7 @@ export class ProfileRepo {
     await this.store!.executeSql(`PRAGMA user_version = ${DB_VERSION};`);
   }
 
-  initDb() {
+  async initDb() {
     try {
       const SQL_CREATE_TABLE = "CREATE TABLE IF NOT EXISTS Profiles(" +
         "id TEXT PRIMARY KEY, " +
@@ -90,7 +98,7 @@ export class ProfileRepo {
         "flag TEXT," +
         "overrideMode TEXT," +
         "customRules TEXT)"
-      this.store?.executeSql(SQL_CREATE_TABLE);
+      await this.store!.executeSql(SQL_CREATE_TABLE);
     } catch (e) {
       console.error("initDb failure", e)
     }
@@ -116,11 +124,14 @@ export class ProfileRepo {
     const predicates = new relationalStore.RdbPredicates('Profiles')
     predicates.equalTo('id', uuid);
     const cursor = await this.store!.query(predicates);
-    if (cursor.rowCount > 0) {
-      cursor.goToNextRow();
-      return this.getFromCursor(cursor);
-    } else {
+    try {
+      if (cursor.rowCount > 0) {
+        cursor.goToNextRow();
+        return this.getFromCursor(cursor);
+      }
       return null;
+    } finally {
+      cursor.close();
     }
   }
 
@@ -152,6 +163,12 @@ export class ProfileRepo {
     const predicates = new relationalStore.RdbPredicates('Profiles')
     predicates.equalTo('id', details.id);
     const old = await this.store!.query(predicates)
+    let exists: boolean;
+    try {
+      exists = old.rowCount > 0;
+    } finally {
+      old.close();
+    }
     const jsonObject = details.getSelectedMap()
     const input: ValuesBucket = {
       id: details.id,
@@ -170,13 +187,24 @@ export class ProfileRepo {
       // 如果未定义则默认存储 'rule'
       overrideMode: details.overrideMode ? details.overrideMode : 'rule'
     }
-    if (old.rowCount > 0) {
+    if (exists) {
       await this.store!.update(input, predicates)
       return 1
     } else {
       await this.store!.insert("Profiles", input)
       return 0
     }
+  }
+
+  // Background refresh must neither resurrect deleted rows nor overwrite UI settings.
+  async updateDownloadMetadata(details: Profile): Promise<void> {
+    const predicates = new relationalStore.RdbPredicates('Profiles');
+    predicates.equalTo('id', details.id);
+    const values: ValuesBucket = {
+      lastUpdateDate: details.lastUpdateDate,
+      subscriptionInfo: JSON.stringify(details.subscriptionInfo)
+    };
+    await this.store!.update(values, predicates);
   }
 
   /**

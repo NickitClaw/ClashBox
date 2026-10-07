@@ -191,12 +191,12 @@ export default class EntryAbility extends UIAbility {
     if (want?.parameters?.['autoReconnect'] !== true) {
       return
     }
-    if (!this.clashCoreInitialized || ClashViewModel.vpnStarted || this.autoReconnecting) {
+    if (!this.clashCoreInitialized || this.autoReconnecting) {
       return
     }
     this.autoReconnecting = true
     hilog.info(0x0000, 'EntryAbility', '接收到重连通知拉起，自动重连 VPN')
-    ClashViewModel.StartVpn()
+    ClashViewModel.RecoverVpn()
       .catch((err: Error) => {
         hilog.error(0x0000, 'EntryAbility', `自动重连 VPN 失败: ${err.message}`)
       })
@@ -347,6 +347,9 @@ export default class EntryAbility extends UIAbility {
   onForeground(): void {
     // Ability has brought to foreground
     AppStorage.setOrCreate('ForwardState', true)
+    if (this.clashCoreInitialized) {
+      ClashViewModel.refreshVpnState().catch((e: Error) => { console.warn('VPN 状态同步失败', e.message) })
+    }
     hilog.info(0x0000, 'EntryAbility', '%{public}s', 'Ability onForeground');
 
     // 应用切回前台时，触发一次配置更新检查

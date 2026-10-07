@@ -322,7 +322,7 @@ export class WebDavClient {
 
     this.logger.debug('WebDavClient._request', `请求方法: ${method}`, { method });
     this.logger.debug('WebDavClient._request', `请求URL: ${url}`, { url });
-    this.logger.debug('WebDavClient._request', `请求头: ${JSON.stringify(finalHeaders)}`, {
+    this.logger.debug('WebDavClient._request', '请求头', {
       headers: finalHeaders,
       hasBody: !!body,
       expectBinary,

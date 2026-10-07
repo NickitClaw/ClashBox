@@ -50,6 +50,11 @@ export class ClashViewModel {
     ClashViewModel.promptAction = promptAction
     await this.profileRepo.init(context)
     this.socketProxy.init(context)
+    this.socketProxy.onConnectionRefused = () => {
+      if (this.desiredRunning && !this.vpnOperation) {
+        this.RecoverVpn().catch((e: Error) => { console.error('VPN 恢复失败', e.message) })
+      }
+    }
     await this.initGeoIp()
     this.registerVpnAuthObserver()
   }
@@ -418,21 +423,15 @@ export class ClashViewModel {
         console.error(`ClashViewModel.ChangeCore restart过程中VPN进程终止失败: ${JSON.stringify(error)}`)
       }
     }
-    await new Promise<boolean>( async (resolve, reject)=>{
-      try {
-        await vpnExtension.startVpnExtensionAbility(vpnWant)
-      } catch(e) {
-        this.context?.getApplicationContext().killAllProcesses().catch((err: Error) => {
-          console.error(`ClashViewModel.ChangeCore 应用进程终止失败: ${JSON.stringify(err)}`)
-        })
+    await vpnExtension.startVpnExtensionAbility(vpnWant)
+    let result = false
+    for (let i = 0; i < 30; i++) {
+      if (await this.checkVpnVpnAbility(requestId) && await this.socketProxy.isSocketReady()) {
+        result = true
+        break
       }
-      resolve(true)
-      setTimeout(() =>{
-        reject(false)
-      }, 10000)
-    })
-    await sleep(600)
-    let result = await this.checkVpnVpnAbility(requestId)
+      await sleep(200)
+    }
     if (!result && restart) {
       ClashViewModel.promptAction.showToast({message:"VpnAbility请求失败! 请重启应用"})
     }
@@ -443,8 +442,7 @@ export class ClashViewModel {
     let lockPath = this.context?.filesDir + '/vpn_ipc.lock';
     try {
       if (!await fs.access(lockPath, fs.AccessModeType.EXIST)) {
-        console.log('ClashViewModel.checkVpnVpnAbility 检查文件vpn_ipc.lock是否存在 access成功：', true)
-        return true;
+        return false;
       } else {
         let requestId = await readText(lockPath)
         console.log('ClashViewModel.checkVpnVpnAbility 检查文件vpn_ipc.lock是否存在 readText成功：', requestId == reqId + "")
@@ -463,55 +461,102 @@ export class ClashViewModel {
       params: params ?? {} as ConfigExtendedParams
     } as UpdateConfigParams)
     if (result != ""){
-      ClashViewModel.promptAction.showToast({message: result, duration: 3000 })
+      throw new Error(result)
     }
     EventHub.sendEvent(EventKey.FetchProxyGroup, null)
   }
-  async ReStartVpn(){
-    if(this.vpnStarted){
-      await this.loadConfig(false, 'ReStartVpn')
-      await this.loadVpnOptions()
-      await this.socketProxy.stopClash()
-      await this.socketProxy.startClash()
-    }
-  }
+  private desiredRunning: boolean = false
+  private vpnOperation: Promise<void> | undefined
+  private vpnQueue: Promise<void> = Promise.resolve()
+  private intentGeneration: number = 0
+  private lastRecoveryAttempt: number = 0
   vpnStarted = false
 
-  // 启动前要加载配置
-  // loadConfig
-  async StartVpn(){
-    this.vpnStarted = true
-    // 同步常驻通知配置到共享 preferences，VPN 扩展进程在内核启动成功后将据此发布通知
-    if (this.context) {
-      await syncVpnNoticePrefs(this.context)
+  async ReStartVpn(): Promise<void> {
+    if (!this.vpnStarted) return
+    await this.StopVpn()
+    await this.StartVpn()
+  }
+
+  async refreshVpnState(): Promise<void> {
+    if (this.vpnOperation) return
+    const generation = this.intentGeneration
+    let active = false
+    try { active = Number(await this.socketProxy.getRuntime()) > 0 } catch (_) {}
+    if (this.vpnOperation || generation !== this.intentGeneration) return
+    if (active !== this.vpnStarted) {
+      this.vpnStarted = active
+      cardManager.pushCartProxyMode(active)
+      EventHub.sendEvent(active ? EventKey.StartedClash : EventKey.StopedClash)
+      if (!active) this.proxyStartedTimer.reset()
     }
-    await this.loadVpnOptions()
-    let result = await this.socketProxy.startClash()
-    // 核心崩溃 小钥匙一直在，要重启两量变
-    if (!result){
-      result = await this.socketProxy.startClash()
-    }
-    if (result){
+    if (active) this.desiredRunning = true
+  }
+
+  async RecoverVpn(): Promise<void> {
+    if (this.vpnOperation) return this.vpnOperation
+    if (Date.now() - this.lastRecoveryAttempt < 10000) return
+    this.lastRecoveryAttempt = Date.now()
+    return this.StartVpn()
+  }
+
+  private queueVpnOperation(work: () => Promise<void>): Promise<void> {
+    const pending = this.vpnQueue.then(work)
+    const tracked = pending.finally(() => {
+      if (this.vpnOperation === tracked) this.vpnOperation = undefined
+    })
+    this.vpnQueue = tracked.catch(() => {})
+    this.vpnOperation = tracked
+    return tracked
+  }
+
+  async StartVpn(): Promise<void> {
+    this.desiredRunning = true
+    const generation = ++this.intentGeneration
+    return this.queueVpnOperation(() => this.startVpnConfirmed(generation))
+  }
+
+  private async startVpnConfirmed(generation: number): Promise<void> {
+    if (!this.desiredRunning || generation !== this.intentGeneration) return
+    try {
+      let ready = await this.socketProxy.isSocketReady()
+      if (!ready) ready = await this.ChangeCore(undefined, true)
+      if (!ready) throw new Error('VPN 扩展未就绪')
+      if (!this.desiredRunning || generation !== this.intentGeneration) return
+      if (Number(await this.socketProxy.getRuntime()) > 0) {
+        this.vpnStarted = true
+        return
+      }
+      this.vpnStarted = false
+      await this.loadConfig(false, 'StartVpn')
+      if (this.context) await syncVpnNoticePrefs(this.context)
+      await this.loadVpnOptions()
+      if (!this.desiredRunning || generation !== this.intentGeneration) return
+      const started = await this.socketProxy.startClash()
+      if (!started) throw new Error('VPN 启动失败')
+      if (!this.desiredRunning || generation !== this.intentGeneration) {
+        await this.socketProxy.stopClash()
+        return
+      }
+      this.vpnStarted = true
       EventHub.sendEvent(EventKey.StartedClash)
       EventHub.sendEvent(EventKey.checkIpInfo)
-    }
-    const runTime = await this.getRuntime()
-    hilog.info(0x001, "EntryAbility", "StartVpn时间戳: " + runTime)
-    // 启动前先初始化卡片显示文本
-    cardManager.pushCartVpnServiceTime(PROXY_STARTED_DURATION_INIT_VALUE)
-    // 计算时间
-    const vpnServiceStartTime = Number(runTime)
-    this.proxyStartedTimer.start((time)=>{
-      EventHub.sendEvent(EventKey.ProxyDuration, time)
-      cardManager.pushCartVpnServiceTime(number2Time(time))
-    },vpnServiceStartTime)
-
-    EventHub.on(EventKey.StopedClashEntry,()=>{
-      hilog.info(0x001, "ClashViewModel", "StopedClashEntry事件")
+      const runTime = Number(await this.getRuntime())
+      if (Number.isFinite(runTime) && runTime > 0) {
+        this.proxyStartedTimer.start((time) => {
+          EventHub.sendEvent(EventKey.ProxyDuration, time)
+          cardManager.pushCartVpnServiceTime(number2Time(time))
+        }, runTime)
+      }
+      cardManager.pushCartProxyMode(true)
+    } catch (e) {
+      this.vpnStarted = false
+      if (generation === this.intentGeneration) this.desiredRunning = false
       this.proxyStartedTimer.reset()
-    })
-
-    cardManager.pushCartProxyMode(this.vpnStarted)
+      cardManager.pushCartProxyMode(false)
+      EventHub.sendEvent(EventKey.StopedClash)
+      throw e as Error
+    }
   }
   async loadVpnOptions(){
     // 使用首选项持久化单个节点信息供卡片拉起服务
@@ -547,7 +592,7 @@ export class ClashViewModel {
         routeAddress: clashConfig?.["route-address"] ?? [],
         accessControl: { mode:appConfig?.accessControlMode ?? "", acceptList: acceptList, rejectList: rejectList } as AccessControl
       } as VpnRawOptions
-      this.socketProxy.setOptionStates(accessControl)
+      await this.socketProxy.setOptionStates(accessControl)
     } else {
       const accessControl = {
         tunIp : clashConfig?.tun?.["tun-ip"],
@@ -555,22 +600,24 @@ export class ClashViewModel {
         ipv6: true,
         routeAddress: clashConfig?.["route-address"] ?? [],
         accessControl: { mode:appConfig?.accessControlMode ?? "", acceptList: [], rejectList: [] } as AccessControl } as VpnRawOptions
-      this.socketProxy.setOptionStates(accessControl)
+      await this.socketProxy.setOptionStates(accessControl)
     }
     // 在日志控制台 过滤关键字 vpnConfig, 验证是否配置成功
 
   }
 
-  async StopVpn(){
-    this.vpnStarted = false
-    this.socketProxy.stopClash()
-    // Index里的停止后操作
-    EventHub.sendEvent(EventKey.StopedClash)
-    // EntryAbility里的停止后操作
-    EventHub.sendEvent(EventKey.StopedClashEntry)
-    EventHub.sendEvent(EventKey.checkIpInfo)
-    cardManager.pushCartProxyMode(this.vpnStarted)
-    this.proxyStartedTimer.reset()
+  async StopVpn(): Promise<void> {
+    this.desiredRunning = false
+    ++this.intentGeneration
+    return this.queueVpnOperation(async () => {
+      if (!await this.socketProxy.stopClash()) throw new Error('内核未确认 VPN 停止')
+      this.vpnStarted = false
+      EventHub.sendEvent(EventKey.StopedClash)
+      EventHub.sendEvent(EventKey.StopedClashEntry)
+      EventHub.sendEvent(EventKey.checkIpInfo)
+      cardManager.pushCartProxyMode(false)
+      this.proxyStartedTimer.reset()
+    })
   }
 
   async getRuntime(){
@@ -606,7 +653,8 @@ export class ClashViewModel {
       } as ConfigExtendedParams)
       console.log(`ClashViewModel.loadConfig 调用方：${name} patch：${patch} 配加载成功`)
     } catch (e) {
-      console.error('ClashViewModel.loadConfig 配置加载失败：', e)
+      console.error('ClashViewModel.loadConfig 配置加载失败')
+      throw e as Error
     }
   }
 

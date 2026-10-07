@@ -1,38 +1,11 @@
 {
   "app": {
-    "signingConfigs": [
-      {
-        "name": "debug",
-        "type": "HarmonyOS",
-        "material": {
-          "certpath": "/Users/nickit/.ohos/config/debug_ClashBox_7yPPtwF1HYoEG3LdFYlvDyLqKR-aE45QNP0PhlVUUQ8=.cer",
-          "keyAlias": "debugKey",
-          "keyPassword": "0000001BCB38CEC75BD37FE4E0CD6CCE1FC8B3718C104906293BFE13F4436F12DB752ADD35CF466C8EEF5E",
-          "profile": "/Users/nickit/.ohos/config/debug_ClashBox_7yPPtwF1HYoEG3LdFYlvDyLqKR-aE45QNP0PhlVUUQ8=.p7b",
-          "signAlg": "SHA256withECDSA",
-          "storeFile": "/Users/nickit/.ohos/config/debug_ClashBox_7yPPtwF1HYoEG3LdFYlvDyLqKR-aE45QNP0PhlVUUQ8=.p12",
-          "storePassword": "0000001B779A961936130DA9B526897E5EE714AD09E7904D40A74454BEA07EEF77FB5BAC2023986AA72729"
-        }
-      },
-      {
-        "name": "release",
-        "type": "HarmonyOS",
-        "material": {
-          "certpath": "/Users/nickit/.ohos/config/release_ClashBox_7yPPtwF1HYoEG3LdFYlvDyLqKR-aE45QNP0PhlVUUQ8=.cer",
-          "keyAlias": "debugKey",
-          "keyPassword": "0000001B7619637E0A8B6E86363F4218D37CBB0F79F31D46F405F407A35378E84550F14BF964301F6368D4",
-          "profile": "/Users/nickit/.ohos/config/release_ClashBox_7yPPtwF1HYoEG3LdFYlvDyLqKR-aE45QNP0PhlVUUQ8=.p7b",
-          "signAlg": "SHA256withECDSA",
-          "storeFile": "/Users/nickit/.ohos/config/release_ClashBox_7yPPtwF1HYoEG3LdFYlvDyLqKR-aE45QNP0PhlVUUQ8=.p12",
-          "storePassword": "0000001B6F3A20B7B4CC392B14BBC2D9E2FA3822E948C05D460F74A1872ABC6153A509B563EF1D8A2E623E"
-        }
-      }
-    ],
+    "signingConfigs": [],
     // 产品配置
     "products": [
       {
         "name": "default",
-        "signingConfig": "debug",
+
         "compatibleSdkVersion": "5.0.5(17)",
         // API 26 起版本号格式变更：直接写 API 级别（hvigor 校验规则，7.0.0(26) 格式会被拒绝）
         "targetSdkVersion": "26.0.0",
@@ -52,7 +25,7 @@
       },
       {
         "name": "release",
-        "signingConfig": "release",
+
         "compatibleSdkVersion": "5.0.5(17)",
         // API 26 起版本号格式变更：直接写 API 级别（hvigor 校验规则，7.0.0(26) 格式会被拒绝）
         "targetSdkVersion": "26.0.0",

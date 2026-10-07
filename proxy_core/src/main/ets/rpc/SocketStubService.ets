@@ -12,14 +12,16 @@ export class SocketStubService {
   server: socket.LocalSocketServer = socket.constructLocalSocketServerInstance();
   clientPool: Map<number, socket.LocalSocketConnection>
   vpnService: CommonVpnService
+  private initialized: Promise<void>
   constructor( context: common.Context) {
     this.clientPool = new Map()
     this.vpnService = new FlClashVpnService(context)
-    this.vpnService.init()
+    this.initialized = this.vpnService.init()
   }
 
   async startService(requestId: number){
     try {
+      await this.initialized
       const socketPath = this.vpnService.context.filesDir + '/ClashBox.sock'
       const goPath = this.vpnService.context.filesDir + '/clash_go.sock'
       // 清理上次进程残留的 socket 文件(强杀/异常退出时 onDestroy 未执行)，
@@ -42,6 +44,7 @@ export class SocketStubService {
             this.vpnService.onRemoteMessageRequest(client, value)
           })
           client.on('close', () => {
+            this.vpnService.onClientClosed(client.clientId)
             client.off("message")
             client.off("close")
             this.clientPool.delete(client.clientId);
@@ -62,18 +65,19 @@ export class SocketStubService {
       } catch (cleanErr) {
         console.warn(`SocketStubService 失败后清理 socket 文件异常: ${cleanErr.message}`)
       }
+      throw e as Error
     }
   }
   async lockVpn(local: number) {
     let lockPath = this.vpnService.context.filesDir + '/vpn_ipc.lock';
     let encoder = new util.TextEncoder()
-    writeFile(lockPath, encoder.encodeInto(local + ""))
+    await writeFile(lockPath, encoder.encodeInto(local + ""))
   }
   startVpn(){
-    this.vpnService.startVpn()
+    return this.vpnService.startVpn()
   }
   stopVpn(){
-    this.vpnService.stopVpn()
+    return this.vpnService.stopVpn()
   }
   async destroy(){
     this.clientPool.forEach((client) => {
@@ -83,7 +87,8 @@ export class SocketStubService {
     })
     this.clientPool.clear()
     this.server.off('connect')
-    this.vpnService.stopVpn()
+    await this.server.close()
+    await this.vpnService.stopVpn()
     const socketPath = this.vpnService.context.filesDir + '/ClashBox.sock'
     const goPath = this.vpnService.context.filesDir + '/clash_go.sock'
     let lockPath = this.vpnService.context.filesDir + '/vpn_ipc.lock';

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"core/rpcframe"
 	"core/state"
 	"encoding/base64"
 	"encoding/json"
@@ -13,6 +14,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/metacubex/mihomo/constant"
@@ -26,50 +28,88 @@ func fileExists(filename string) bool {
 	return !os.IsNotExist(err)
 }
 
+var ipcMu sync.Mutex
+var ipcListener net.Listener
+
 func startIpcProxy(path string) {
-
-	if fileExists(path) {
-		if err := os.Remove(path); err != nil {
-			log.Println("ipc_go", err)
-			return
-		}
+	ipcMu.Lock()
+	if ipcListener != nil {
+		_ = ipcListener.Close()
+		ipcListener = nil
 	}
-
-	listener, err := net.Listen("unix", path)
-	if err != nil {
-		log.Println("ipc_go", err)
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		ipcMu.Unlock()
+		log.Println("ipc_go: remove socket failed")
 		return
 	}
+	listener, err := net.Listen("unix", path)
+	if err != nil {
+		ipcMu.Unlock()
+		log.Println("ipc_go: listen failed", err)
+		return
+	}
+	ipcListener = listener
+	ipcMu.Unlock()
 	defer listener.Close()
-	log.Println("ipc_go", "Server is listening on", path)
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
-			log.Println("ipc_go Accept err:", err)
+			return
 		}
 		go handleConnection(conn)
 	}
 }
+
 func handleConnection(conn net.Conn) {
 	defer conn.Close()
-
-	buffer := make([]byte, 10240)
-
-	n, err := conn.Read(buffer)
+	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	payload, err := rpcframe.Read(conn)
 	if err != nil {
-		log.Println("ipc_go", err)
 		return
 	}
 	request := RpcRequest{}
-	err = json.Unmarshal(buffer[:n], &request)
-	if err != nil {
-		log.Println("ipc_go error", err)
+	if err := json.Unmarshal(payload, &request); err != nil {
 		return
 	}
-	handleRemoteRequest(request, func(rr RpcResult) {
-		res, _ := json.Marshal(rr)
-		conn.Write([]byte(string(res) + "EOF"))
-	})
+	_ = conn.SetReadDeadline(time.Time{})
+	session := rpcframe.NewSession(conn)
+	defer session.Close()
+	streaming := request.Method == SetLogObserver || request.Method == RegisterOnMessage
+	reply := func(result RpcResult) {
+		data, err := json.Marshal(result)
+		if err != nil {
+			session.Finish()
+			return
+		}
+		_ = session.Send(data, !streaming)
+	}
+	session.WatchDisconnect()
+	if request.Method == SetLogObserver {
+		unsubscribe := subscribeLog(func(value string) {
+			reply(RpcResult{Key: request.Key, Method: request.Method, Result: value})
+		})
+		defer unsubscribe()
+	} else {
+		go func() {
+			defer func() {
+				if recover() != nil {
+					reply(RpcResult{Key: request.Key, Method: request.Method, Error: "invalid RPC request"})
+				}
+			}()
+			handleRemoteRequest(request, reply)
+		}()
+	}
+	if streaming {
+		<-session.Done()
+	} else {
+		timer := time.NewTimer(55 * time.Second)
+		defer timer.Stop()
+		select {
+		case <-session.Done():
+		case <-timer.C:
+			session.Finish()
+		}
+	}
 }
 
 type RpcRequest struct {
@@ -131,7 +171,7 @@ func handleRemoteRequest(request RpcRequest, fn func(RpcResult)) {
 	switch request.Method {
 	case QueryTrafficNow:
 		onlyProxy := true
-		if len(request.Params) > 1 {
+		if len(request.Params) > 0 {
 			res, _ := request.Params[0].(bool)
 			onlyProxy = res
 		}
@@ -140,7 +180,7 @@ func handleRemoteRequest(request RpcRequest, fn func(RpcResult)) {
 		fn(ret)
 	case QueryTrafficTotal:
 		onlyProxy := true
-		if len(request.Params) > 1 {
+		if len(request.Params) > 0 {
 			res, _ := request.Params[0].(bool)
 			onlyProxy = res
 		}
@@ -256,15 +296,10 @@ func handleRemoteRequest(request RpcRequest, fn func(RpcResult)) {
 		handleStopLog()
 		fn(ret)
 	case StartClash:
-		tunFd := anyToInt(request.Params[0])
-		log.Println("ipc_go", "tunFd", tunFd)
-		StartTUN(tunFd, func(fd Fd) {
-			res, _ := json.Marshal(fd)
-			ret.Result = string(res)
-			fn(ret)
-		})
+		ret.Error = "start VPN through ClashBox.sock"
+		fn(ret)
 	case StopClash:
-		StopTun()
+		ret.Error = "stop VPN through ClashBox.sock"
 		fn(ret)
 	case VpnOptions:
 		ret.Result = GetVpnOptions()
@@ -319,12 +354,12 @@ func handleRemoteRequest(request RpcRequest, fn func(RpcResult)) {
 		ret.Result = ""
 		fn(ret)
 	case HealthCheckBatch:
-	  paramsString, _ := request.Params[0].(string)
-	  handleAsyncTestDelayBatch(paramsString, func(value string) {
-	   ret.Result = value
-	   fn(ret)
-	  })
-	 case GetVersion:
+		paramsString, _ := request.Params[0].(string)
+		handleAsyncTestDelayBatch(paramsString, func(value string) {
+			ret.Result = value
+			fn(ret)
+		})
+	case GetVersion:
 		ver := constant.Version
 		if ver == "" {
 			ver = "Mihomo-release-v1.19.27"

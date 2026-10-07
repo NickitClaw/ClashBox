@@ -10,14 +10,92 @@ export class YamlUtils {
    * 此处用 parseDocument 保留的原始 source 还原为字符串, 保证 parse→stringify 往返不丢数据。
    */
   static parseYamlSafe(yamlContent: string): Record<string, Object | undefined> {
-    try {
-      const doc = parseDocument(yamlContent);
-      YamlUtils.fixInfiniteScalars(doc.contents);
-      return doc.toJS() as Record<string, Object | undefined>;
-    } catch (e) {
-      console.warn('YAML 安全解析失败，回退普通解析:', e);
-      return YamlUtils.parseYamlSafe(yamlContent);
+    const doc = parseDocument(yamlContent);
+    if (doc.errors.length > 0) {
+      throw new Error(`无效 YAML：${doc.errors[0].code}`);
     }
+    YamlUtils.fixInfiniteScalars(doc.contents);
+    // Unresolved aliases and excessive alias expansion also fail here, once.
+    return doc.toJS() as Record<string, Object | undefined>;
+  }
+
+  /** SIP002/legacy SS and Trojan share links. Never manufacture credentials. */
+  private static parseShareLink(link: string, index: number): Record<string, Object> {
+    const ss = link.startsWith('ss://');
+    let body = link.substring(ss ? 5 : 9);
+    const hash = body.indexOf('#');
+    const name = hash >= 0 ? decodeURIComponent(body.substring(hash + 1)) : '';
+    body = hash >= 0 ? body.substring(0, hash) : body;
+    const query = body.indexOf('?');
+    const options: Record<string, string> = {};
+    if (query >= 0) {
+      for (const item of body.substring(query + 1).split('&')) {
+        if (!item) continue;
+        const eq = item.indexOf('=');
+        const key = decodeURIComponent(eq < 0 ? item : item.substring(0, eq));
+        if (Object.prototype.hasOwnProperty.call(options, key)) throw new Error('节点参数重复');
+        options[key] = decodeURIComponent(eq < 0 ? '' : item.substring(eq + 1));
+      }
+      body = body.substring(0, query);
+    }
+    if (ss && !body.includes('@')) {
+      const decoded = YamlUtils.decodeBase64UrlSafe(body);
+      if (!decoded) throw new Error('SS Base64 无效');
+      body = decoded;
+    }
+    const at = body.lastIndexOf('@');
+    if (at <= 0) throw new Error('节点缺少认证信息或服务器');
+    let auth = body.substring(0, at);
+    const endpoint = body.substring(at + 1).replace(/\/$/, '');
+    const match = endpoint.match(/^(?:\[([^\]]+)\]|([^:\s/]+)):(\d+)$/);
+    if (!match) throw new Error('节点服务器或端口无效（IPv6 必须使用方括号）');
+    const port = Number(match[3]);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('节点端口超出范围');
+    const proxy: Record<string, Object> = {
+      name: name || `${ss ? 'SS' : 'Trojan'}-Node-${index}`,
+      type: ss ? 'ss' : 'trojan', server: match[1] || match[2], port: port, udp: true
+    };
+    if (ss) {
+      // SIP002 plugins need protocol-specific options; refuse instead of silently dropping them.
+      if (options['plugin']) throw new Error('暂不支持 SS 插件链接，请导入完整 Clash YAML');
+      if (!auth.includes(':')) {
+        const decoded = YamlUtils.decodeBase64UrlSafe(decodeURIComponent(auth));
+        if (!decoded) throw new Error('SS 认证信息无效');
+        auth = decoded;
+      } else {
+        auth = decodeURIComponent(auth);
+      }
+      const colon = auth.indexOf(':');
+      if (colon <= 0 || colon === auth.length - 1) throw new Error('SS 缺少加密方式或密码');
+      proxy.cipher = auth.substring(0, colon);
+      proxy.password = auth.substring(colon + 1);
+    } else {
+      proxy.password = decodeURIComponent(auth);
+      const allowed = ['sni', 'peer', 'allowInsecure', 'skip-cert-verify', 'type', 'network', 'security', 'host', 'path', 'serviceName', 'alpn'];
+      for (const key of Object.keys(options)) {
+        if (!allowed.includes(key)) throw new Error('暂不支持此 Trojan 参数，请导入完整 Clash YAML');
+      }
+      if (options['security'] && options['security'] !== 'tls') throw new Error('Trojan 仅支持 TLS');
+      const network = options['type'] || options['network'] || 'tcp';
+      if (!['tcp', 'ws', 'grpc'].includes(network)) throw new Error('暂不支持此 Trojan 传输类型');
+      proxy.sni = options['sni'] || options['peer'] || proxy.server;
+      proxy['skip-cert-verify'] = false;
+      for (const key of ['allowInsecure', 'skip-cert-verify']) {
+        if (options[key] !== undefined) {
+          if (!['0', '1', 'true', 'false'].includes(options[key])) throw new Error('TLS 校验参数无效');
+          proxy['skip-cert-verify'] = options[key] === '1' || options[key] === 'true';
+        }
+      }
+      if (network === 'ws') {
+        proxy.network = 'ws';
+        proxy['ws-opts'] = { path: options['path'] || '/', headers: { Host: options['host'] || proxy.sni } };
+      } else if (network === 'grpc') {
+        proxy.network = 'grpc';
+        proxy['grpc-opts'] = { 'grpc-service-name': options['serviceName'] || '' };
+      }
+      if (options['alpn']) proxy.alpn = options['alpn'].split(',');
+    }
+    return proxy;
   }
 
   /** 递归修复节点树中值为 Infinity/NaN 的标量，还原为其原始字符串 source */
@@ -451,8 +529,7 @@ export class YamlUtils {
       const trimmed = rawContent.trim();
 
       // 如果已经是明文协议头，不需要 Base64 解码
-      if (trimmed.startsWith('vmess://') || trimmed.startsWith('ss://') || trimmed.startsWith('trojan://') ||
-        trimmed.startsWith('ssr://')) {
+      if (/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)) {
         decodedStr = trimmed;
       } else {
         // 尝试 Base64 解码
@@ -467,6 +544,7 @@ export class YamlUtils {
       // 验证解码后的内容是否包含通用协议头
       if (!decodedStr.includes('vmess://') && !decodedStr.includes('ss://') && !decodedStr.includes('trojan://') &&
         !decodedStr.includes('ssr://')) {
+        if (/^[a-z][a-z0-9+.-]*:\/\//i.test(decodedStr)) throw new Error('暂不支持此订阅节点协议');
         return null;
       }
 
@@ -527,27 +605,28 @@ export class YamlUtils {
             proxyList.push(proxy);
             proxyNames.push(name);
           } catch (e) {
-            console.warn("解析单条 vmess 链接失败", e);
+            throw new Error('VMess 节点格式无效');
           }
         } else if (trimLine.startsWith('ss://')) {
-          // Shadowsocks 解析逻辑略 (SIP002)
-          const name = `SS-Node-${proxyNames.length}`;
-          // TODO: 完善 SS 解析
-          proxyList.push({ name: name, type: "ss", server: "0.0.0.0", port: 1, cipher: "aes-256-gcm", password: "password" });
+          const proxy = YamlUtils.parseShareLink(trimLine, proxyNames.length);
+          let name = proxy.name as string;
+          while (proxyNames.includes(name)) name += '#';
+          proxy.name = name;
+          proxyList.push(proxy);
           proxyNames.push(name);
         } else if (trimLine.startsWith('trojan://')) {
-          // Trojan 解析逻辑略
-          const name = `Trojan-Node-${proxyNames.length}`;
-          // TODO: 完善 Trojan 解析
-          proxyList.push({ name: name, type: "trojan", server: "0.0.0.0", port: 1, password: "password" });
+          const proxy = YamlUtils.parseShareLink(trimLine, proxyNames.length);
+          let name = proxy.name as string;
+          while (proxyNames.includes(name)) name += '#';
+          proxy.name = name;
+          proxyList.push(proxy);
           proxyNames.push(name);
         } else if (trimLine.startsWith('ssr://')) {
           try {
             // ssr:// 之后是整段 URL-safe Base64：host:port:protocol:method:obfs:base64url(password)/?参数
             const decoded = YamlUtils.decodeBase64UrlSafe(trimLine.substring('ssr://'.length));
             if (!decoded) {
-              console.warn("解析单条 ssr 链接失败：Base64 解码失败");
-              continue;
+              throw new Error('SSR Base64 无效');
             }
             const slashIdx = decoded.indexOf('/?');
             const mainPart = slashIdx >= 0 ? decoded.substring(0, slashIdx) : decoded;
@@ -555,14 +634,14 @@ export class YamlUtils {
             // 从右往左取 5 段，剩余合并为 server，兼容 IPv6 地址含冒号的情况
             const segments = mainPart.split(':');
             if (segments.length < 6) {
-              console.warn(`解析单条 ssr 链接失败：字段不足 ${mainPart}`);
-              continue;
+              throw new Error('SSR 节点字段不足');
             }
             const passwordB64 = segments[segments.length - 1];
             const obfs = segments[segments.length - 2];
             const method = segments[segments.length - 3];
             const protocol = segments[segments.length - 4];
-            const port = parseInt(segments[segments.length - 5]);
+            const port = Number(segments[segments.length - 5]);
+            if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('SSR 端口无效');
             const server = segments.slice(0, segments.length - 5).join(':');
             const password = YamlUtils.decodeBase64UrlSafe(passwordB64) ?? passwordB64;
 
@@ -584,7 +663,7 @@ export class YamlUtils {
               name: name,
               type: "ssr",
               server: server,
-              port: isNaN(port) ? 443 : port,
+              port: port,
               cipher: method,
               password: password,
               protocol: protocol,
@@ -603,8 +682,10 @@ export class YamlUtils {
             proxyList.push(proxy);
             proxyNames.push(name);
           } catch (e) {
-            console.warn("解析单条 ssr 链接失败", e);
+            throw new Error('SSR 节点格式无效');
           }
+        } else {
+          throw new Error('订阅包含暂不支持的节点协议或无效行');
         }
       }
 
@@ -658,8 +739,7 @@ export class YamlUtils {
 
       return finalYaml;
     } catch (e) {
-      console.error("Universal 订阅转换失败:", e);
-      return null;
+      throw new Error(`订阅节点解析失败：${e instanceof Error ? e.message : '格式无效'}`);
     }
   }
 

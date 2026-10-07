@@ -8,14 +8,14 @@ const profilesDirectoryName = "/profiles";
 export async function getHome(context: Context | undefined): Promise<string>{
   let home = context?.filesDir + "/ClashBox"
   if (!await fs.access(home, fs.AccessModeType.EXIST)){
-    fs.mkdir(home)
+    try { await fs.mkdir(home) } catch (e) { if (!await fs.access(home)) throw e as Error }
   }
   return home
 }
 export async function getProfilesPath(context: Context | undefined): Promise<string> {
   let dir = await getHome(context) + profilesDirectoryName
   if(!await fs.access(dir, fs.AccessModeType.EXIST)){
-    await fs.mkdir(dir)
+    try { await fs.mkdir(dir) } catch (e) { if (!await fs.access(dir)) throw e as Error }
   }
   return dir
 }
@@ -26,7 +26,7 @@ export async function getProfileDir(context: Context | undefined, id: string) {
   const directory = await getProfilesPath(context);
   // 兼容ClashMeta 核心的文件目录
   if(!await fs.access(directory + `/${id}`, fs.AccessModeType.EXIST)){
-    fs.mkdir(directory + `/${id}`)
+    try { await fs.mkdir(directory + `/${id}`) } catch (e) { if (!await fs.access(directory + `/${id}`)) throw e as Error }
   }
   return directory + `/${id}`
 }

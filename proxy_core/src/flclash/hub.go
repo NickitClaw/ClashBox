@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/samber/lo"
 	"net"
 	"runtime"
 	"sort"
@@ -13,7 +14,6 @@ import (
 
 	"github.com/metacubex/mihomo/adapter"
 	"github.com/metacubex/mihomo/adapter/outboundgroup"
-	"github.com/metacubex/mihomo/common/observable"
 	"github.com/metacubex/mihomo/common/utils"
 	"github.com/metacubex/mihomo/component/mmdb"
 	"github.com/metacubex/mihomo/component/updater"
@@ -38,8 +38,6 @@ var (
 	isInit             = false
 	configParams       = ConfigExtendedParams{}
 	externalProviders  = map[string]cp.Provider{}
-	logSubscriber      observable.Subscription[log.Event]
-	logStop            chan struct{}
 	currentConfig      *config.Config
 	healthCheckMu      sync.Mutex
 	healthCheckRunning bool
@@ -105,6 +103,22 @@ func handleUpdateConfig(bytes []byte) string {
 
 	configParams = params.Params
 	prof := decorationConfig(params.ProfileId, params.Config)
+	// Translate the legacy wrapper option into Mihomo's system DNS source.
+	var legacy struct {
+		Config struct {
+			App *struct {
+				AppendSystemDNS *bool `json:"appendSystemDns"`
+			} `json:"app"`
+		} `json:"config"`
+	}
+	if err := json.Unmarshal(bytes, &legacy); err != nil {
+		return err.Error()
+	}
+	if legacy.Config.App != nil && legacy.Config.App.AppendSystemDNS != nil && *legacy.Config.App.AppendSystemDNS {
+		if !lo.Contains(prof.DNS.NameServer, "system") {
+			prof.DNS.NameServer = append(prof.DNS.NameServer, "system")
+		}
+	}
 	err = applyConfig(prof)
 	if err != nil {
 		return err.Error()
@@ -242,77 +256,77 @@ func handleAsyncTestDelay(paramsString string, fn func(string)) {
 		data, _ := json.Marshal(delayData)
 		fn(string(data))
 		return false, nil
-		})
-		 }
+	})
+}
 
-		 func handleAsyncTestDelayBatch(paramsString string, fn func(string)) {
-		  var params = &TestDelayBatchParams{}
-		  err := json.Unmarshal([]byte(paramsString), params)
-		  if err != nil || len(params.ProxyNames) == 0 {
-		   fn("[]")
-		   return
-		  }
+func handleAsyncTestDelayBatch(paramsString string, fn func(string)) {
+	var params = &TestDelayBatchParams{}
+	err := json.Unmarshal([]byte(paramsString), params)
+	if err != nil || len(params.ProxyNames) == 0 {
+		fn("[]")
+		return
+	}
 
-		  expectedStatus, err := utils.NewUnsignedRanges[uint16]("")
-		  if err != nil {
-		   fn("[]")
-		   return
-		  }
+	expectedStatus, err := utils.NewUnsignedRanges[uint16]("")
+	if err != nil {
+		fn("[]")
+		return
+	}
 
-		  testURL := constant.DefaultTestURL
-		  if params.TestURL != "" {
-		   testURL = params.TestURL
-		  }
+	testURL := constant.DefaultTestURL
+	if params.TestURL != "" {
+		testURL = params.TestURL
+	}
 
-		  proxies := tunnel.ProxiesWithProviders()
-		  var mu sync.Mutex
-		  results := make([]Delay, 0, len(params.ProxyNames))
-		  sem := make(chan struct{}, 50)
-		  var wg sync.WaitGroup
+	proxies := tunnel.ProxiesWithProviders()
+	var mu sync.Mutex
+	results := make([]Delay, 0, len(params.ProxyNames))
+	sem := make(chan struct{}, 50)
+	var wg sync.WaitGroup
 
-		  for _, proxyName := range params.ProxyNames {
-		   proxy := proxies[proxyName]
-		   if proxy == nil {
-		    mu.Lock()
-		    results = append(results, Delay{Name: proxyName, Value: -1})
-		    mu.Unlock()
-		    continue
-		   }
+	for _, proxyName := range params.ProxyNames {
+		proxy := proxies[proxyName]
+		if proxy == nil {
+			mu.Lock()
+			results = append(results, Delay{Name: proxyName, Value: -1})
+			mu.Unlock()
+			continue
+		}
 
-		   sem <- struct{}{}
-		   wg.Add(1)
-		   go func(name string, p constant.Proxy) {
-		    defer func() {
-		     <-sem
-		     wg.Done()
-		    }()
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(name string, p constant.Proxy) {
+			defer func() {
+				<-sem
+				wg.Done()
+			}()
 
-		    ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond*time.Duration(params.Timeout))
-		    defer cancel()
+			ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond*time.Duration(params.Timeout))
+			defer cancel()
 
-		    d := Delay{Name: name}
-		    delay, err := p.URLTest(ctx, testURL, expectedStatus)
-		    if err != nil || delay == 0 {
-		     d.Value = -1
-		    } else {
-		     d.Value = int32(delay)
-		    }
+			d := Delay{Name: name}
+			delay, err := p.URLTest(ctx, testURL, expectedStatus)
+			if err != nil || delay == 0 {
+				d.Value = -1
+			} else {
+				d.Value = int32(delay)
+			}
 
-		    mu.Lock()
-		    results = append(results, d)
-		    mu.Unlock()
-		   }(proxyName, proxy)
-		  }
+			mu.Lock()
+			results = append(results, d)
+			mu.Unlock()
+		}(proxyName, proxy)
+	}
 
-		  // 不阻塞 IPC handler，后台等待所有测试完成再回调
-		  go func() {
-		   wg.Wait()
-		   data, _ := json.Marshal(results)
-		   fn(string(data))
-		  }()
-		 }
+	// 不阻塞 IPC handler，后台等待所有测试完成再回调
+	go func() {
+		wg.Wait()
+		data, _ := json.Marshal(results)
+		fn(string(data))
+	}()
+}
 
-		 func handleHealthCheckAll() {
+func handleHealthCheckAll() {
 	healthCheckMu.Lock()
 	if healthCheckRunning {
 		healthCheckMu.Unlock()
@@ -593,39 +607,52 @@ func handleSideLoadExternalProvider(providerName string, data []byte, fn func(va
 	}()
 }
 
-func handleStartLog(fn func(value string)) {
-	// 通知旧的 goroutine 退出，防止泄漏
-	if logStop != nil {
-		close(logStop)
-		logStop = nil
-	}
-	if logSubscriber != nil {
-		log.UnSubscribe(logSubscriber)
-		logSubscriber = nil
-	}
-	logSubscriber = log.Subscribe()
-	logStop = make(chan struct{})
+// Every subscriber owns its channel and stop signal; old readers cannot observe
+// replacement globals or cancel a newer subscriber on connection close.
+func subscribeLog(fn func(string)) func() {
+	subscriber := log.Subscribe()
+	done := make(chan struct{})
+	var once sync.Once
+	cancel := func() { once.Do(func() { close(done); log.UnSubscribe(subscriber) }) }
 	go func() {
+		defer cancel()
 		for {
 			select {
-			case <-logStop:
+			case <-done:
 				return
-			case logData, ok := <-logSubscriber:
+			case data, ok := <-subscriber:
 				if !ok {
 					return
 				}
-				if logData.LogLevel < log.Level() {
+				if data.LogLevel < log.Level() {
 					continue
 				}
-				logMessage, _ := json.Marshal(LogInfo{
-					LogLevel: logData.LogLevel.String(),
-					Payload:  logData.Payload,
-					Time:     time.Now().Unix(),
-				})
-				fn(string(logMessage))
+				message, _ := json.Marshal(LogInfo{data.LogLevel.String(), data.Payload, time.Now().Unix()})
+				fn(string(message))
 			}
 		}
 	}()
+	return cancel
+}
+
+var nativeLogMu sync.Mutex
+var nativeLogCancel func()
+
+func handleStartLog(fn func(string)) {
+	nativeLogMu.Lock()
+	defer nativeLogMu.Unlock()
+	if nativeLogCancel != nil {
+		nativeLogCancel()
+	}
+	nativeLogCancel = subscribeLog(fn)
+}
+func handleStopLog() {
+	nativeLogMu.Lock()
+	defer nativeLogMu.Unlock()
+	if nativeLogCancel != nil {
+		nativeLogCancel()
+		nativeLogCancel = nil
+	}
 }
 
 type LogInfo struct {
@@ -634,16 +661,6 @@ type LogInfo struct {
 	Time     int64  `json:"time"`
 }
 
-func handleStopLog() {
-	if logStop != nil {
-		close(logStop)
-		logStop = nil
-	}
-	if logSubscriber != nil {
-		log.UnSubscribe(logSubscriber)
-		logSubscriber = nil
-	}
-}
 func handleGetCountryCode(ip string, fn func(value string)) {
 	go func() {
 		runLock.Lock()
@@ -664,6 +681,7 @@ func handleGetMemory(fn func(value string)) {
 }
 
 var reqeustList = []statistic.Tracker{}
+
 const maxRequestList = 1000
 
 func init() {

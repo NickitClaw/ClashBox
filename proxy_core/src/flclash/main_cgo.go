@@ -7,8 +7,9 @@ import "C"
 import (
 	"core/state"
 	"encoding/json"
-	"fmt"
 	"strings"
+	"sync"
+	"unsafe"
 
 	napi "github.com/likuai2010/ohos-napi"
 	"github.com/likuai2010/ohos-napi/entry"
@@ -23,18 +24,90 @@ func initClash(env js.Env, this js.Value, args []js.Value) any {
 	return handleInitClash(homeDirStr)
 }
 
+type safeCallback struct {
+	mu sync.Mutex
+	fn C.napi_threadsafe_function
+}
+
+func newSafeCallback(env js.Env, callback js.Value) *safeCallback {
+	return &safeCallback{fn: C.bridge_create(C.napi_env(unsafe.Pointer(env.Env)), C.napi_value(unsafe.Pointer(callback.Value)))}
+}
+func (c *safeCallback) close() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.fn != nil {
+		C.bridge_release(c.fn)
+		c.fn = nil
+	}
+}
+func (c *safeCallback) protect(fd Fd) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.fn == nil || C.bridge_send_fd(c.fn, C.int64_t(fd.Id), C.int64_t(fd.Value)) == 0 {
+		acknowledgeFd(fd.Id, false)
+	}
+}
+func (c *safeCallback) log(text string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.fn == nil {
+		return
+	}
+	value := C.CString(text)
+	defer C.free(unsafe.Pointer(value))
+	C.bridge_send_log(c.fn, value)
+}
+
+var nativeOpMu sync.Mutex
+var protectCallback *safeCallback
+var logCallback *safeCallback
+
 func startTun(env js.Env, this js.Value, args []js.Value) any {
 	tunFd, _ := napi.GetValueInt32(env.Env, args[0].Value)
-	tsfn := env.CreateThreadsafeFunction(args[1], "startTun")
-	StartTUN(int(tunFd), func(fd Fd) {
-
-		tsfn.Call(env.ValueOf(fd.Id), env.ValueOf(fd.Value))
-	})
-	return nil
+	callback := newSafeCallback(env, args[1])
+	promise := env.NewPromise()
+	go func() {
+		nativeOpMu.Lock()
+		defer nativeOpMu.Unlock()
+		stopErr := StopTun()
+		protectCallback.close()
+		protectCallback = callback
+		if stopErr != nil {
+			callback.close()
+			promise.Reject(stopErr.Error())
+			return
+		}
+		if callback.fn == nil {
+			promise.Reject("cannot create protect callback")
+			return
+		}
+		if err := StartTUN(int(tunFd), callback.protect); err != nil {
+			callback.close()
+			promise.Reject(err.Error())
+			return
+		}
+		promise.Resolve(true)
+	}()
+	return promise
 }
 func stopTun(env js.Env, this js.Value, args []js.Value) any {
-	StopTun()
-	return nil
+	promise := env.NewPromise()
+	go func() {
+		nativeOpMu.Lock()
+		defer nativeOpMu.Unlock()
+		err := StopTun()
+		protectCallback.close()
+		protectCallback = nil
+		if err != nil {
+			promise.Reject(err.Error())
+			return
+		}
+		promise.Resolve(nil)
+	}()
+	return promise
 }
 
 func validateConfig(env js.Env, this js.Value, args []js.Value) any {
@@ -49,7 +122,7 @@ func validateConfig(env js.Env, this js.Value, args []js.Value) any {
 
 func updateConfig(env js.Env, this js.Value, args []js.Value) any {
 	paramsString, _ := napi.GetValueStringUtf8(env.Env, args[0].Value)
-	fmt.Println("updateConfig", paramsString)
+
 	promise := env.NewPromise()
 	bytes := []byte(paramsString)
 	go func() {
@@ -144,15 +217,16 @@ func closeConnection(env js.Env, this js.Value, args []js.Value) any {
 }
 
 func startLog(env js.Env, this js.Value, args []js.Value) any {
-	tsfn := env.CreateThreadsafeFunction(args[0], "startLog")
-	handleStartLog(func(value string) {
-		tsfn.Call(env.ValueOf("startLog"), env.ValueOf(value))
-	})
+	handleStopLog()
+	logCallback.close()
+	logCallback = newSafeCallback(env, args[0])
+	handleStartLog(logCallback.log)
 	return nil
 }
-
 func stopLog(env js.Env, this js.Value, args []js.Value) any {
 	handleStopLog()
+	logCallback.close()
+	logCallback = nil
 	return nil
 }
 func getCountryCode(env js.Env, this js.Value, args []js.Value) any {
@@ -205,10 +279,12 @@ func getCurrentProfileName(env js.Env, this js.Value, args []js.Value) any {
 }
 
 func setFdMap(env js.Env, this js.Value, args []js.Value) any {
-	fdInt, _ := napi.GetValueInt32(env.Env, args[0].Value)
-	go func() {
-		fdMap.Store(int64(fdInt))
-	}()
+	id, _ := napi.GetValueDouble(env.Env, args[0].Value)
+	success := true
+	if len(args) > 1 {
+		success, _ = napi.GetValueBool(env.Env, args[1].Value)
+	}
+	acknowledgeFd(int64(id), success)
 	return nil
 }
 

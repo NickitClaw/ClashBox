@@ -7,7 +7,7 @@ import { LogCallback, LogEntry } from "./config";
 export class WebDavLogger {
   private static instance: WebDavLogger;
   private callbacks: LogCallback[] = [];
-  private currentLevel: number = 0; // DEBUG级别
+  private currentLevel: number = 1; // INFO; debug still uses the same redaction boundary.
 
   private constructor() {}
 
@@ -43,6 +43,28 @@ export class WebDavLogger {
     return this.currentLevel
   }
 
+  private redactText(value: string): string {
+    return value
+      .replace(/(https?:\/\/)[^\s/@]+@/gi, '$1[REDACTED]@')
+      .replace(/(https?:\/\/[^\s?#]+)\?[^\s#]*/gi, '$1?[REDACTED]')
+      .replace(/((?:proxy-)?authorization["']?\s*[:=]\s*["']?)(?:Basic|Bearer)\s+[^\s"',}]+/gi, '$1[REDACTED]');
+  }
+
+  private redact(value: any, seen: object[] = []): any {
+    if (typeof value === 'string') return this.redactText(value);
+    if (value === null || typeof value !== 'object') return value;
+    if (seen.includes(value)) return '[Circular]';
+    const next = seen.concat([value]);
+    if (value instanceof Error) return { name: value.name, message: this.redactText(value.message) };
+    if (Array.isArray(value)) return value.map(item => this.redact(item, next));
+    const clean: Record<string, any> = {};
+    for (const key of Object.keys(value)) {
+      clean[key] = /authorization|cookie|password|passwd|secret|token|api[-_]?key/i.test(key)
+        ? '[REDACTED]' : this.redact(value[key], next);
+    }
+    return clean;
+  }
+
   // 核心日志方法
   private log(level: 'DEBUG' | 'INFO' | 'WARN' | 'ERROR', category: string, message: string, data?: any): void {
     const levels = { DEBUG: 0, INFO: 1, WARN: 2, ERROR: 3 };
@@ -55,8 +77,8 @@ export class WebDavLogger {
       timestamp: new Date(),
       level,
       category,  // 用于区分不同模块
-      message,
-      data
+      message: this.redactText(message),
+      data: this.redact(data)
     };
 
     // 发送给所有回调
@@ -127,4 +149,3 @@ export class WebDavLogger {
     this.log('ERROR', category, message, data);
   }
 }
-

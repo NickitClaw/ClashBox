@@ -34,54 +34,60 @@ export class VpnNoticeController {
     this.context = context
   }
 
-  /** VPN 启动成功后调用：开关条件满足时发布常驻通知并开始定时刷新（幂等，重复调用先停再启） */
+  private active: boolean = false
+  private generation: number = 0
+  private pending: Promise<void> = Promise.resolve()
+  private refreshing: boolean = false
+
   async start(): Promise<void> {
     this.stopTimer()
-    const prefs = readVpnNoticePrefs(this.context)
-    if (!shouldPublishVpnNotice(prefs)) {
-      console.info(`${TAG} 常驻通知开关未启用，跳过发布`)
-      return
-    }
-    try {
-      if (!await notificationManager.isNotificationEnabled()) {
-        console.warn(`${TAG} 应用通知权限未授予，跳过发布`)
-        return
-      }
-    } catch (e) {
-      console.error(`${TAG} 通知权限检查失败: ${(e as Error).message}`)
-      return
-    }
-    await this.publish(this.buildContent(prefs))
-    this.timerId = setInterval(() => {
-      this.tick()
-    }, NOTICE_UPDATE_INTERVAL_MS)
-    console.info(`${TAG} 常驻通知已发布并开始刷新 id=${VPN_NOTICE_ID}`)
+    this.active = true
+    const generation = ++this.generation
+    // Observe preferences while VPN is active, including when notices are disabled.
+    this.timerId = setInterval(() => { this.tick() }, NOTICE_UPDATE_INTERVAL_MS)
+    await this.refresh(generation)
   }
 
-  /** VPN 停止 / 进程销毁时调用：停止刷新并取消常驻通知（重复调用安全） */
-  stop(): void {
+  async stop(): Promise<void> {
+    this.active = false
+    ++this.generation
     this.stopTimer()
-    notificationManager.cancel(VPN_NOTICE_ID)
-      .then(() => console.info(`${TAG} 常驻通知已取消 id=${VPN_NOTICE_ID}`))
-      .catch((e: Error) => console.warn(`${TAG} 取消常驻通知失败(可能不存在): ${e.message}`))
+    // Serialize cancellation after any publication already in flight.
+    this.pending = this.pending.then(async () => { await this.cancel() })
+    await this.pending
+  }
+
+  private async cancel(): Promise<void> {
+    try { await notificationManager.cancel(VPN_NOTICE_ID) } catch (_) {}
   }
 
   private stopTimer(): void {
-    if (this.timerId != -1) {
+    if (this.timerId !== -1) {
       clearInterval(this.timerId)
       this.timerId = -1
     }
   }
 
-  /** 每 tick 重读共享配置：运行中关闭常驻通知开关时立即撤下通知 */
-  private async tick(): Promise<void> {
-    const prefs = readVpnNoticePrefs(this.context)
-    if (!shouldPublishVpnNotice(prefs)) {
-      console.info(`${TAG} 常驻通知开关已关闭，停止刷新并取消通知`)
-      this.stop()
-      return
-    }
-    await this.publish(this.buildContent(prefs))
+  private tick(): void {
+    if (this.active && !this.refreshing) this.refresh(this.generation)
+  }
+
+  private refresh(generation: number): Promise<void> {
+    this.refreshing = true
+    this.pending = this.pending.then(async () => {
+      if (!this.active || generation !== this.generation) return
+      const prefs = readVpnNoticePrefs(this.context)
+      if (!shouldPublishVpnNotice(prefs)) {
+        await this.cancel()
+        return
+      }
+      if (!await notificationManager.isNotificationEnabled()) return
+      if (!this.active || generation !== this.generation) return
+      await this.publish(this.buildContent(prefs), generation)
+    }).catch((e: Error) => {
+      console.warn(`${TAG} 通知刷新失败: ${e.message}`)
+    }).finally(() => { this.refreshing = false })
+    return this.pending
   }
 
   private buildContent(prefs: VpnNoticePrefs): NoticeContent {
@@ -104,7 +110,7 @@ export class VpnNoticeController {
     }
   }
 
-  private async publish(content: NoticeContent): Promise<void> {
+  private async publish(content: NoticeContent, generation: number): Promise<void> {
     try {
       const request: notificationManager.NotificationRequest = {
         id: VPN_NOTICE_ID,
@@ -122,6 +128,7 @@ export class VpnNoticeController {
         isAlertOnce: true,
         tapDismissed: false
       }
+      if (!this.active || generation !== this.generation) return
       await notificationManager.publish(request)
     } catch (e) {
       console.error(`${TAG} 常驻通知发布/更新失败: ${(e as Error).message}`)
@@ -171,7 +178,7 @@ export async function publishReconnectNotice(context: common.Context): Promise<v
         }
       ],
       actionType: wantAgent.OperationType.START_ABILITY,
-      requestCode: 0,
+      requestCode: VPN_RECONNECT_NOTICE_ID,
       actionFlags: [wantAgent.WantAgentFlags.UPDATE_PRESENT_FLAG]
     })
     const request: notificationManager.NotificationRequest = {

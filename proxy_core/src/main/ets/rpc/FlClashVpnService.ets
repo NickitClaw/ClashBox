@@ -1,3 +1,4 @@
+import { encodeRpcFrame, RpcFrameBuffer } from './RpcFrame';
 import { vpnExtension, socket } from '@kit.NetworkKit';
 import {
   startTun, stopTun, setFdMap, getVpnOptions, startLog, getProxies, getTraffic,
@@ -47,6 +48,7 @@ type VpnOpType = 'start' | 'stop' | 'heal'
 interface VpnOpItem {
   op: VpnOpType
   resolves: Array<(v: boolean) => void>
+  generation: number
 }
 export interface VpnOptions {
   enable: boolean,
@@ -69,20 +71,33 @@ export class FlClashVpnService extends CommonVpnService {
   vpnConnection: vpnExtension.VpnConnection | undefined
   public configPath: string = ""
   protectSocketPath: string = ""
-  private textDecoder: util.TextDecoder = new util.TextDecoder()
+  private frames: Map<number, RpcFrameBuffer> = new Map()
 
   override async onRemoteMessageRequest(client: socket.LocalSocketConnection, message: socket.LocalSocketMessageInfo): Promise<void> {
-    let request = JSON.parse(this.textDecoder.decodeToString(new Uint8Array(message.message))) as RpcRequest
-    let code = request.method
-    let params = request.params
     try {
-      let result = await this.onRemoteMessage(code, params)
-      this.sendClient(client, JSON.stringify({ result: result, error: undefined }))
-    } catch (e) {
-      console.error(`socket stub ${code} result: `, e.message ?? e, e.stack)
-      this.sendClient(client, JSON.stringify({ error: e.message ?? e }))
+      let buffer = this.frames.get(client.clientId)
+      if (!buffer) {
+        buffer = new RpcFrameBuffer()
+        this.frames.set(client.clientId, buffer)
+      }
+      for (const frame of buffer.push(new Uint8Array(message.message))) {
+        const request = JSON.parse(frame) as RpcRequest
+        try {
+          const result = await this.onRemoteMessage(request.method, request.params)
+          await this.sendClient(client, JSON.stringify({ result: result }))
+        } catch (e) {
+          await this.sendClient(client, JSON.stringify({ error: (e as Error).message || 'VPN 操作失败' }))
+        }
+      }
+    } catch (_) {
+      this.frames.delete(client.clientId)
+      client.close().catch(() => {})
     }
   }
+  override onClientClosed(clientId: number): void {
+    this.frames.delete(clientId)
+  }
+
   /** 防止多次调用 stopVpn 导致 stopTun 重复执行 */
   private isStopped: boolean = false
   /** 常驻通知控制器（惰性创建：字段初始化时 context 尚未由父类构造函数赋值） */
@@ -99,6 +114,8 @@ export class FlClashVpnService extends CommonVpnService {
   private healFailures: number = 0
   /** VPN 是否处于"应当运行"状态：自愈探活只在其为 true 时进行；stopVpn 与自愈最终失败时置 false */
   private vpnActive: boolean = false
+  private desiredRunning: boolean = false
+  private intentGeneration: number = 0
   /** 内核失联自愈最大重启次数，超过后发"点击重连"通知并停止重试 */
   private static readonly MAX_HEAL_FAILURES: number = 3
   /** 看门狗探活间隔 */
@@ -113,7 +130,7 @@ export class FlClashVpnService extends CommonVpnService {
       switch (code) {
         case ClashRpcType.startClash: {
           // startListener/stopListener 已移入串行 op 内部，保证与 TUN 启停的顺序
-          this.enqueueVpnOp('start').then((r) => {
+          this.startVpn().then((r) => {
             resolve(r)
           }).catch((e: Error) => {
             reject(e)
@@ -121,7 +138,7 @@ export class FlClashVpnService extends CommonVpnService {
           break;
         }
         case ClashRpcType.stopClash: {
-          this.enqueueVpnOp('stop').then((r) => {
+          this.stopVpn().then((r) => {
             resolve(r)
           }).catch((e: Error) => {
             reject(e)
@@ -203,26 +220,31 @@ export class FlClashVpnService extends CommonVpnService {
   /**
    * VPN 启停/自愈统一入口：互斥执行 + 排队合并。
    * - 相邻同类型 op 合并（搭车同一结果），快速连点 start/stop 不会叠加执行；
-   * - 后到的 stop 会取消仍在排队（未开始执行）的 start 并直接回 true——
-   *   状态随后被 stop 收敛，且避免 UI 侧 startClash 收到 false 后的重试把 VPN 又拉起来。
+   * - stop 立即撤销运行意图，取消排队中的 start/heal，并向被取消操作返回 false。
+   * - 每个操作等待原生完成确认；过期的异步结果不能恢复 VPN。
    */
   private enqueueVpnOp(op: VpnOpType): Promise<boolean> {
+    if (op !== 'heal') {
+      this.desiredRunning = op === 'start'
+      ++this.intentGeneration
+    }
     return new Promise<boolean>((resolve) => {
       if (op == 'stop') {
         for (const pending of this.vpnOpQueue) {
-          if (pending.op == 'start') {
+          if (pending.op !== 'stop') {
             pending.resolves.forEach((r) => {
-              r(true)
+              r(false)
             })
           }
         }
-        this.vpnOpQueue = this.vpnOpQueue.filter((p) => p.op != 'start')
+        this.vpnOpQueue = this.vpnOpQueue.filter((p) => p.op === 'stop')
       }
       const tail = this.vpnOpQueue[this.vpnOpQueue.length - 1]
       if (tail && tail.op == op) {
         tail.resolves.push(resolve)
+        tail.generation = this.intentGeneration
       } else {
-        this.vpnOpQueue.push({ op: op, resolves: [resolve] })
+        this.vpnOpQueue.push({ op: op, resolves: [resolve], generation: this.intentGeneration })
       }
       this.drainVpnOps()
     })
@@ -239,7 +261,7 @@ export class FlClashVpnService extends CommonVpnService {
         let result = false
         try {
           if (head.op == 'start') {
-            result = await this.startVpnInternal()
+            result = await this.startVpnInternal(head.generation)
           } else if (head.op == 'stop') {
             result = await this.stopVpnInternal()
           } else {
@@ -261,77 +283,69 @@ export class FlClashVpnService extends CommonVpnService {
     return this.enqueueVpnOp('start')
   }
 
-  override stopVpn(): void {
-    this.enqueueVpnOp('stop')
+  override async stopVpn(): Promise<boolean> {
+    return this.enqueueVpnOp('stop')
   }
 
-  async startVpnInternal(): Promise<boolean> {
-    // ★ 重置停止标记，允许下次 stopVpn 正常关闭资源
+  async startVpnInternal(generation: number = this.intentGeneration): Promise<boolean> {
+    if (!this.desiredRunning || generation !== this.intentGeneration) return false
     this.isStopped = false
-    // startListener 在串行 op 内执行，保证与 stop op 内的 stopListener 严格有序
-    startListener()
-    if (this.vpnConnection) {
-      this.vpnConnection.destroy()
-      this.vpnConnection = undefined
-      // 系统级 VPN 连接销毁后需要时间回收 TUN 路由/protect 通道，
-      // 立即重建（卡片冷启动→关闭→UI 再启动场景）会叠加残留状态，
-      // 后台大流量时 protect 超时 → 流量回环 → 代理与直连全断
-      await new Promise<void>((resolve) => {
-        setTimeout(resolve, 500)
-      })
-    }
-    let config = this.ParseConfig();
-    let tunFd = -1
+    this.vpnActive = false
     try {
-      tunFd = await super.getTunFd(config)
-      if (tunFd > -1) {
-        this.startClash(tunFd)
-        // VPN 激活：发布常驻通知（扩展进程存活期间持续刷新），并启动内核 IPC 看门狗
-        this.vpnActive = true
-        this.noticeController.start()
-        this.startKernelWatchdog()
-      }
-      return tunFd > -1;
+      await this.releaseTun()
+      if (!this.desiredRunning || generation !== this.intentGeneration) return false
+      startListener()
+      const fd = await super.getTunFd(this.ParseConfig())
+      if (fd < 0) throw new Error('系统未创建 TUN')
+      if (!this.desiredRunning || generation !== this.intentGeneration) throw new Error('VPN 启动已取消')
+      const started = await this.startClash(fd, generation)
+      if (started !== true) throw new Error('内核未确认 TUN 启动，请重新编译 libflclash.so')
+      if (!this.desiredRunning || generation !== this.intentGeneration) throw new Error('VPN 启动已取消')
+      this.vpnActive = true
+      this.healFailures = 0
+      await this.noticeController.start()
+      this.startKernelWatchdog()
+      return true
     } catch (error) {
-      console.error("ClashVPN  error ", error)
+      this.vpnActive = false
+      await this.noticeController.stop()
+      try { await this.releaseTun() } finally {
+        stopListener()
+        if (this.desiredRunning) this.startKernelWatchdog()
+      }
+      console.error('ClashVPN 启动失败', (error as Error).message)
       return false
     }
   }
 
-  /**
-   * 启动内核 TUN 并建立 protect 通道。
-   * protect 走 NAPI 线程安全回调（startTun 第二参数）：Go 端 StartTUN 的 markSocket 钩子
-   * 每创建一个出站 socket 即回调一次 (id, fd)，本进程 protect 后 setFdMap 确认。
-   * 注：原实现经 clash_go.sock 转发 protect 请求，但 Go 端 handleConnection 单读单写后即
-   * defer close，StartTUN 之后的 fd 推送实际无法到达（连接已关闭），NAPI 直连彻底规避该问题。
-   */
-  startClash(tunFd: number) {
-    console.error("ClashVPN startTun", tunFd)
-    startTun(tunFd, (id: number, fd: number) => {
-      // 每个 fd 独立异步处理：Go 侧每个出站 socket 都等待 protect 完成（最长 5s），
-      // 串行 await 会让前一个 protect 阻塞后续 fd，后台 JS 线程受限时更易超时
-      // → socket 未保护 → 流量回环进 TUN → DNS 全断。
-      this.protectWithRetry(fd, 3).then(() => {
-        setFdMap(id)
-      }).catch((protectErr: Error) => {
-        // 重试仍失败：打 hilog 点便于确认后台 protect 是否被系统中断（hilog | grep ClashVPN protect）
-        console.error("ClashVPN protect failed after retry, skipping setFdMap for fd.id=" + id, protectErr.message)
-      })
+  async startClash(tunFd: number, generation: number = this.intentGeneration): Promise<boolean> {
+    const connection = this.vpnConnection
+    return await startTun(tunFd, (id: number, fd: number) => {
+      if (!connection || !this.desiredRunning || generation !== this.intentGeneration) {
+        setFdMap(id, false)
+        return
+      }
+      // Bind protection to the connection that owns this TUN, never a replacement.
+      connection.protect(fd).then(() => {
+        setFdMap(id, this.desiredRunning && generation === this.intentGeneration)
+      }).catch(() => { setFdMap(id, false) })
     })
   }
 
-  stopVpnInternal(): boolean {
-    if (this.isStopped) return true
-    this.isStopped = true
-    // 正常停止路径：先摘看门狗与常驻通知，保证不会误触发内核自愈
+  private async releaseTun(): Promise<void> {
+    try { await stopTun() } finally { await super.stopVpn() }
+  }
+
+  async stopVpnInternal(): Promise<boolean> {
     this.vpnActive = false
-    this.healFailures = 0
     this.stopKernelWatchdog()
-    this.noticeController.stop()
-    stopTun()
-    super.stopVpn()
-    // ★ 先停止 tun 再停止 listener，防止 Go 内部清理和 stopTun() 竞争导致 NULL 指针崩溃
-    stopListener()
+    await this.noticeController.stop()
+    try {
+      await this.releaseTun()
+    } finally {
+      stopListener()
+      this.isStopped = true
+    }
     return true
   }
 
@@ -352,34 +366,24 @@ export class FlClashVpnService extends CommonVpnService {
   }
 
   /**
-   * 周期性探活：向内核 IPC（clash_go.sock）发一次轻量 GetVersion RPC，任何合法响应即视为存活。
+   * 周期性探活：同时要求本地已激活以及内核返回有效的 TUN 启动时间。
    * 启停/自愈 op 执行期间跳过探活，避免把中间态误判为失联。
    */
   private async probeKernel(): Promise<void> {
-    if (this.isStopped || !this.vpnActive || this.vpnOpRunning || this.vpnOpQueue.length > 0) {
-      return
-    }
-    const alive = await this.probeKernelRpc()
-    if (alive) {
-      if (this.healFailures > 0) {
-        console.info(`ClashVPN 看门狗探活恢复，清零自愈失败计数(${this.healFailures})`)
-      }
-      this.healFailures = 0
-      return
-    }
-    console.error("ClashVPN 看门狗探活失败，内核 IPC 失联，排队自愈")
-    // 自愈进统一串行队列：与 UI 触发的 start/stop 互斥排队；已在排队的自愈不重复排
-    if (!this.vpnOpQueue.some((o) => o.op == 'heal')) {
-      this.enqueueVpnOp('heal')
-    }
+    if (!this.desiredRunning || this.vpnOpRunning || this.vpnOpQueue.length > 0) return
+    const generation = this.intentGeneration
+    const alive = this.vpnActive && await this.probeKernelRpc(true)
+    if (!this.desiredRunning || generation !== this.intentGeneration || alive) return
+    if (!this.vpnOpQueue.some((o) => o.op === 'heal')) this.enqueueVpnOp('heal')
   }
 
-  private probeKernelRpc(): Promise<boolean> {
+  private probeKernelRpc(requireTun: boolean = false): Promise<boolean> {
     const socketPath = this.context?.filesDir + '/clash_go.sock'
     if (!socketPath) {
       return Promise.resolve(false)
     }
     return new Promise<boolean>((resolve) => {
+      const frames = new RpcFrameBuffer()
       let finished = false
       const client: socket.LocalSocket = socket.constructLocalSocketInstance()
       let timeoutId = -1
@@ -401,8 +405,13 @@ export class FlClashVpnService extends CommonVpnService {
       timeoutId = setTimeout(() => {
         done(false)
       }, 3000)
-      client.on('message', () => {
-        done(true)
+      client.on('message', (value: socket.LocalSocketMessageInfo) => {
+        try {
+          for (const frame of frames.push(new Uint8Array(value.message))) {
+            const response = JSON.parse(frame) as Record<string, string>
+            done(!response.error && (!requireTun || Number(response.result) > 0))
+          }
+        } catch (_) { done(false) }
       })
       client.on('error', () => {
         done(false)
@@ -412,7 +421,7 @@ export class FlClashVpnService extends CommonVpnService {
       })
       client.connect({ address: { address: socketPath }, timeout: 1000 })
         .then(() => {
-          client.send({ data: JSON.stringify({ method: ClashRpcType.GetVersion, params: [] }) })
+          return client.send({ data: encodeRpcFrame(JSON.stringify({ method: requireTun ? ClashRpcType.GetVpnRunTime : ClashRpcType.GetVersion, params: [] })) })
         })
         .catch(() => {
           done(false)
@@ -428,75 +437,34 @@ export class FlClashVpnService extends CommonVpnService {
    * 连续失败超过 MAX_HEAL_FAILURES 次后拆除 VPN 并发布"点击重连"通知，停止重试。
    */
   private async healKernelInternal(): Promise<boolean> {
-    if (this.isStopped || !this.vpnActive) {
+    if (!this.desiredRunning) return false
+    const generation = this.intentGeneration
+    if (this.healFailures >= FlClashVpnService.MAX_HEAL_FAILURES) {
+      this.desiredRunning = false
+      await this.stopVpnInternal()
+      if (generation === this.intentGeneration) await publishReconnectNotice(this.context)
       return false
     }
-    this.healFailures++
-    console.error(`ClashVPN 内核自愈第 ${this.healFailures} 次`)
-    if (this.healFailures > FlClashVpnService.MAX_HEAL_FAILURES) {
-      // 超过阈值：拆除 VPN 防止流量黑洞，停止重试，引导用户点击重连
-      console.error(`ClashVPN 内核自愈连续失败超过 ${FlClashVpnService.MAX_HEAL_FAILURES} 次，停止重试`)
-      this.stopVpnInternal()
-      await publishReconnectNotice(this.context)
-      return false
-    }
-    // 1. 停 TUN（Go 侧幂等：stopKeepalive + tunListener.Close + removeSocketHook）
-    try {
-      stopTun()
-    } catch (e) {
-      console.error(`ClashVPN 自愈 stopTun 异常: ${(e as Error).message}`)
-    }
-    // 2. 重建内核 IPC 监听（socket 文件被清理或 listener 协程死亡的场景）
-    const goPath = this.context?.filesDir + '/clash_go.sock'
-    try {
-      if (await fileIo.access(goPath)) {
-        await fileIo.unlink(goPath)
+    ++this.healFailures
+    this.vpnActive = false
+    await this.noticeController.stop()
+    await this.releaseTun()
+    if (!this.desiredRunning || generation !== this.intentGeneration) return false
+    let ready = await this.probeKernelRpc()
+    if (!ready) {
+      // Go owns listener replacement and socket cleanup.
+      startIpc(this.context.filesDir + '/clash_go.sock')
+      for (let i = 0; i < 3 && !ready; i++) {
+        if (!this.desiredRunning || generation !== this.intentGeneration) return false
+        await new Promise<void>((resolve) => { setTimeout(resolve, 300) })
+        ready = await this.probeKernelRpc()
       }
-      startIpc(goPath)
-    } catch (e) {
-      console.error(`ClashVPN 自愈重建 IPC 监听异常: ${(e as Error).message}`)
     }
-    // 3. 等待 IPC 就绪（最长 3s）
-    let ipcReady = false
-    for (let i = 0; i < 10 && !ipcReady; i++) {
-      await new Promise<void>((resolve) => {
-        setTimeout(resolve, 300)
-      })
-      ipcReady = await this.probeKernelRpc()
-    }
-    if (!ipcReady) {
-      console.error("ClashVPN 自愈：IPC 监听重建后仍不可达，等待下一次探活重试")
-      return false
-    }
-    // 4. 重建 TUN 与内核（内含 startListener；protect 通道由 startClash 的 NAPI 回调重建）
-    const ok = await this.startVpnInternal()
-    if (ok) {
-      console.info(`ClashVPN 内核自愈第 ${this.healFailures} 次重启成功`)
-    } else {
-      console.error(`ClashVPN 内核自愈第 ${this.healFailures} 次重启失败`)
-    }
-    return ok
+    if (!ready) return false
+    // Only a confirmed, fully recreated TUN resets the consecutive failure count.
+    return await this.startVpnInternal(generation)
   }
 
-  /**
-   * protect 带重试：后台 Extension 进程受限时 vpnConnection.protect 可能偶发失败，
-   * 失败重试可避免出站 fd 未保护导致流量回环（直连断网）
-   */
-  private async protectWithRetry(fd: number, retries: number): Promise<void> {
-    let lastErr: Error | undefined = undefined
-    for (let i = 0; i < retries; i++) {
-      try {
-        await this.protect(fd)
-        return
-      } catch (e) {
-        lastErr = e as Error
-        await new Promise<void>((resolve) => {
-          setTimeout(resolve, 100)
-        })
-      }
-    }
-    throw lastErr ?? new Error('protect failed')
-  }
   override async init() {
     initClash(await getHome(this.context), "1.0.0")
   }

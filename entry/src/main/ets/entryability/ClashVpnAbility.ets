@@ -34,12 +34,14 @@ export default class ClashVpnAbility extends VpnExtensionAbility {
     let encoder = new util.TextEncoder()
     writeFile(lockPath, encoder.encodeInto(local + ""))
   }
-  onDestroy(){
-    console.log("ClashBox", `后台vpn服务(ClashVpnAbility) 退出`);
-    this.clashStubService?.stopVpn();
-    let lockPath = this.context.filesDir + '/vpn_ipc.lock';
-    fs.unlinkSync(lockPath)
+  async onDestroy(): Promise<void> {
+    try {
+      await this.clashStubService?.destroy()
+    } catch (e) {
+      console.warn('VPN 扩展清理失败', (e as Error).message)
+    }
   }
+
 };
 
 

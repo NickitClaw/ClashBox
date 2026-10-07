@@ -44,22 +44,25 @@ class LocalValidateSocketProxy extends SocketProxyService {
  * 进程模型：独立扩展进程，共享应用沙箱（RDB fsclash.db / profiles 目录均可直接访问）。
  */
 export default class ConfigUpdateWorkAbility extends WorkSchedulerExtensionAbility {
+  private generation: number = 0
   /**
    * 延迟任务触发回调。注意：循环任务（isRepeat=true）在执行完后不要调用 stopWork，
    * 否则本次调度会被停止；系统会在事件循环空闲后回收进程，任务超时时长为 2 分钟。
    */
   onWorkStart(work: workScheduler.WorkInfo): void {
     hilog.info(0xFF00, TAG, `订阅自动更新延迟任务触发 workId=${work.workId}`)
-    this.runAutoUpdate().catch((e: Error) => {
+    const generation = ++this.generation
+    this.runAutoUpdate(generation).catch((e: Error) => {
       hilog.error(0xFF00, TAG, `订阅自动更新执行失败: ${e.message}`)
     })
   }
 
   onWorkStop(work: workScheduler.WorkInfo): void {
+    ++this.generation
     hilog.info(0xFF00, TAG, `订阅自动更新延迟任务停止 workId=${work.workId}`)
   }
 
-  private async runAutoUpdate(): Promise<void> {
+  private async runAutoUpdate(generation: number): Promise<void> {
     const repo = new ProfileRepo()
     await repo.init(this.context)
     const profiles = await repo.queryAll()
@@ -72,17 +75,21 @@ export default class ConfigUpdateWorkAbility extends WorkSchedulerExtensionAbili
     const socketProxy = new LocalValidateSocketProxy()
     socketProxy.init(this.context)
     for (const profile of targets) {
+      if (generation !== this.generation) return
       if (!isProfileUpdateDue(profile, now)) {
         hilog.info(0xFF00, TAG, `配置 [${profile.name}] 未到更新间隔，跳过`)
         continue
       }
       try {
+        profile.shouldCancelUpdate = () => generation !== this.generation
         profile.loadContext(this.context, DEFAULT_UA)
         await profile.update(socketProxy)
-        await repo.addOrUpdate(profile)
+        if (generation !== this.generation) return
+        await repo.updateDownloadMetadata(profile)
         hilog.info(0xFF00, TAG, `配置 [${profile.name}] 更新完成`)
         await this.publishResult(profile, null)
       } catch (e) {
+        if (generation !== this.generation) return
         const err = e as Error
         hilog.error(0xFF00, TAG, `配置 [${profile.name}] 更新失败: ${err.message}`)
         await this.publishResult(profile, err)
@@ -134,7 +141,7 @@ export default class ConfigUpdateWorkAbility extends WorkSchedulerExtensionAbili
   private static noticeIdOf(profileId: string): number {
     let hash = 0
     for (let i = 0; i < profileId.length; i++) {
-      hash = (hash * 31 + profileId.charCodeAt(i)) % 100000
+      hash = (hash * 31 + profileId.charCodeAt(i)) % 50000
     }
     return NOTICE_ID_BASE + hash
   }

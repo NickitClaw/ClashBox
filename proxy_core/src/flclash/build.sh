@@ -1,51 +1,30 @@
-#!/bin/bash
-
-# 设置架构和目标
-arch="arm64"  # 可选值：amd64, arm64
-target="aarch64"  # 可选值：x86_64, aarch64
-outdir="arm64-v8a"  # 可选值：x86_64, arm64-v8a
-
-# 设置 OHOS_NATIVE_HOME
-OHOS_NATIVE_HOME="/Applications/DevEco-Studio.app/Contents/sdk/default/openharmony/native"
-
-# 基础编译标志
-BASE_FLAGS="-Wno-error --sysroot=$OHOS_NATIVE_HOME/sysroot "
-
-# 工具链路径
-TOOLCHAIN="$OHOS_NATIVE_HOME/llvm"
-
-# 设置环境变量
-export CC="$TOOLCHAIN/bin/clang"
-export CXX="$TOOLCHAIN/bin/clang++"
-export LD="$TOOLCHAIN/bin/clang"
-export CGO_AR="$TOOLCHAIN/bin/llvm-ar"
-export GOASM="$TOOLCHAIN/bin/llvm-as"
-export GOOS="linux"
-export GOARCH="$arch"
-export GOARM=""
-export CGO_ENABLED="1"
-export CGO_CXXFLAGS=""
-export CGO_CFLAGS="-Wno-error --target=$target-linux-ohos $BASE_FLAGS"
-export CGO_LDFLAGS=" --sysroot=$OHOS_NATIVE_HOME/sysroot --target=$target-linux-ohos"
-
-# 源文件和输出文件
-sourceFile="./"
-outputFile="libflclash.so"
-
-# 构建命令，生成共享库
-/Volumes/codes/git/go-ohos/bin/go  build -tlsmodegd  -buildmode c-shared -tags "ohos with_gvisor"   -gcflags="all=-N -l" -o $outputFile $sourceFile
-
-# 检查编译结果
-if [ -f "$outputFile" ]; then
-    echo "success: $outputFile"
-else
-    echo "failed"
-fi
-
-# 复制生成的 .so 文件到指定目录
-cp -f "$outputFile" "$PWD/../../libs/$outdir/$outputFile"
-rm -f "$outputFile" 
-
-
-# ubex > gvisor@v0.0-20240320004321-933faba989ec > pkg>tcpip>link >fdbased>~60 endpoint.go
-#isSocketFD
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")"
+# Source: https://gitcode.com/openharmony-sig/ohos_golang_go
+GO_BIN="${OHOS_GO:-${HOME}/.local/share/harmonyos7/native-toolchain/go-ohos/bin/go}"
+OHOS_NATIVE_HOME="${OHOS_NATIVE_HOME:-/Applications/DevEco-Studio.app/Contents/sdk/default/openharmony/native}"
+ARCH="${1:-arm64}"
+case "$ARCH" in
+  arm64) target=aarch64; outdir=arm64-v8a ;;
+  amd64) target=x86_64; outdir=x86_64 ;;
+  *) echo 'Usage: build.sh [arm64|amd64]' >&2; exit 1 ;;
+esac
+test -x "$GO_BIN" || { echo 'Set OHOS_GO to the OpenHarmony Go executable' >&2; exit 1; }
+test -f core/go.mod || { echo 'Initialize the pinned Go core submodule first' >&2; exit 1; }
+export CC="$OHOS_NATIVE_HOME/llvm/bin/clang"
+export CXX="$OHOS_NATIVE_HOME/llvm/bin/clang++"
+export CGO_CFLAGS="--target=$target-linux-ohos --sysroot=$OHOS_NATIVE_HOME/sysroot"
+export CGO_CXXFLAGS="$CGO_CFLAGS"
+export CGO_LDFLAGS="$CGO_CFLAGS -Wl,-z,lazy"
+export GOOS=openharmony GOARCH="$ARCH" CGO_ENABLED=1 GOTOOLCHAIN=local
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+revision="$(git -C core rev-parse --short=12 HEAD)"
+"$GO_BIN" build -trimpath -buildmode=c-shared -tags 'ohos with_gvisor' \
+  -ldflags "-s -w -checklinkname=0 -X github.com/metacubex/mihomo/constant.Version=ClashBox-$revision" \
+  -o "$work/libflclash.so" .
+mkdir -p "../../libs/$outdir"
+# Failed builds never copy a stale library.
+cp "$work/libflclash.so" "../../libs/$outdir/libflclash.so"
+echo "Built ../../libs/$outdir/libflclash.so (core $revision)"
