@@ -43,6 +43,8 @@ import { ShareData, Xb_GetResourceString,
   Xb_PreferenceUtil,
   Xb_Share, Xb_TabBarVertical, Xb_ToastUtil } from 'xb_components'
 import { QRCodeDialog } from '../components/Configuration/QRCodeComponent'
+import { syncVpnNoticePrefs } from '../common/utils/VpnNoticeConfigSync'
+import ConfigAutoUpdateService from '../common/utils/ConfigAutoUpdateService'
 import { JSON } from '@kit.ArkTS'
 
 
@@ -1005,6 +1007,10 @@ struct ConfigurationPage {
     this.appConfig.currentProxyName = undefined
     this.appConfig.currentProfileName = undefined
     this.favoriteProfiles.delete(this.currentTouchConfigData.configId)
+    // 节点名已清空，同步共享 preferences（VPN 扩展进程常驻通知标题回退为 ClashBox）
+    syncVpnNoticePrefs(this.getUIContext().getHostContext()!)
+    // 订阅集合已变化，重新评估自动更新延迟任务（无勾选时停止 WorkScheduler 任务）
+    ConfigAutoUpdateService.reset()
     // 加载配置
     EventHub.sendEvent(EventKey.FetchProfile)
     Xb_ToastUtil.showToast({ message: `${getResourceString($r('app.string.configuration_deleted'), this)}💔` })

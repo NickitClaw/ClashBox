@@ -4,6 +4,7 @@ import { toggleRowList } from "../Common/Common"
 import { UIConfig } from "../../entryability/AppState"
 import { PageMargin } from "../../common/breakpoint/BreakPoint"
 import { deviceInfo } from '@kit.BasicServicesKit';
+import { syncVpnNoticePrefs } from "../../common/utils/VpnNoticeConfigSync"
 
 @Component
 struct Backgrounder {
@@ -78,6 +79,8 @@ struct Backgrounder {
     this.uiConfig.backgroundKeepTask = this.isKeepTask
     // 改变后台运行全局变量的状态
     this.uiConfig.Enablebackgrounder = this.isKeepTask
+    // 任务保持状态影响常驻通知发布条件，同步到共享 preferences 供 VPN 扩展进程读取
+    syncVpnNoticePrefs(this.getUIContext().getHostContext()!)
   }
 }
 export default Backgrounder

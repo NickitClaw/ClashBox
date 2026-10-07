@@ -16,6 +16,7 @@ import { UIConfig } from "../../entryability/AppState"
 import { customAnimationUtil } from "../../common/utils/Animation"
 import { PageMargin } from "../../common/breakpoint/BreakPoint"
 import { EventHub, EventKey } from "../../common/EventHub"
+import { syncVpnNoticePrefs } from "../../common/utils/VpnNoticeConfigSync"
 
 const TAG: string = '[通知页]';
 const DOMAIN_NUMBER: number = 0xFF00;
@@ -199,6 +200,8 @@ struct Notice {
                         curve: Curve.Ease
                       }, () => {
                         this.uiConfig.EnabledPermanentnotice = isOn
+                        // 同步到共享 preferences，供 VPN 扩展进程刷新常驻通知
+                        syncVpnNoticePrefs(this.getUIContext().getHostContext()!)
                       })
                     }
                   })
@@ -232,6 +235,8 @@ struct Notice {
                       curve: Curve.Ease
                     }, () => {
                       this.uiConfig.EnabledStatusNotice = isOn
+                      // 同步到共享 preferences，供 VPN 扩展进程选择通知槽位
+                      syncVpnNoticePrefs(this.getUIContext().getHostContext()!)
                     })
                   })
               }
@@ -263,6 +268,8 @@ struct Notice {
                 curve: Curve.Ease
               }, () => {
                 this.uiConfig.EnabledCoexistNotice = !this.uiConfig.EnabledCoexistNotice
+                // 同步到共享 preferences，供 VPN 扩展进程判断常驻通知发布条件
+                syncVpnNoticePrefs(this.getUIContext().getHostContext()!)
               })
             })
           }

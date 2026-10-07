@@ -25,7 +25,8 @@ import {
   convertMillisecondsToTimeGap,
 } from '../common/entity/Constants'
 import { ProxyItem, ProxyData, ProxyGroupItemDataSource, ProxyItemDataSource } from '../common/datasources/ProxyData'
-import { ClashConfig, IpInfo, Profile, ProxyMode } from 'proxy_core'
+import { ClashConfig, IpInfo, Profile, ProxyMode, VPN_NOTICE_ID } from 'proxy_core'
+import { syncVpnNoticePrefs } from '../common/utils/VpnNoticeConfigSync'
 import { EventHub, EventKey } from '../common/EventHub'
 import ClashViewModel from '../entryability/ClashViewModel'
 import { AppConfig, AppFlowingState, AppState, getPackageInfo, UIConfig } from '../entryability/AppState'
@@ -72,7 +73,6 @@ import {
   Xb_FloatTabBarDirection,
   Xb_Global,
   Xb_KVdbUtil,
-  Xb_NotificationUtils,
   Xb_PreferenceUtil,
   Xb_ResourceColorUtil,
   Xb_StatusBarUtils,
@@ -81,6 +81,7 @@ import {
   Xb_TabTitleFontSize
 } from 'xb_components'
 import { Xb_GoToWeb } from 'xb_components/src/main/ets/utils/JumpTo'
+import ConfigAutoUpdateService from '../common/utils/ConfigAutoUpdateService'
 import { notificationManager } from '@kit.NotificationKit'
 import { BusinessError } from '@kit.BasicServicesKit'
 import { cardManager } from '../common/utils/CardManageUtil'
@@ -199,14 +200,10 @@ struct Index {
   @Provide curOffsetRemain: number = 0
   // 恢复时刻
   @Provide theRestoreTime: number = 0
-  // 通知更新任务id
-  @State updateNoticeJob: number = 0
   // 暂停时刻
   @Provide thePauseTime: number = 0
   // 流量任务id
   private trafficJob: number = 0
-  // 通知任务id
-  @State noticeJob: number = 0
   private tabList: TabBuild[] = [
     { name: $r('app.string.Home'), icon: $r('sys.symbol.house_fill') },
     { name: $r('app.string.Proxy'), icon: $r('sys.symbol.list_bullet_square_fill') },
@@ -641,6 +638,7 @@ struct Index {
       cancel: ()=> {
         if (!this.uiConfig.EnabledStatusNotice) {
           this.uiConfig.Enablednotice = false
+          syncVpnNoticePrefs(this.context)
         }
       },
       confirm: () => {
@@ -875,12 +873,7 @@ struct Index {
     await this.awaitInit()
 
     // 初始化实况窗
-/*    const isLive = await LiveViewUtil.init(this.getUIContext().getHostContext()!)
-    if (isLive) {
-      console.log(`LiveViewUtil 实况窗初始化成功`)
-    } else {
-      console.error(`LiveViewUtil 实况窗初始化失败`)
-    }*/
+    LiveViewUtil.init(this.getUIContext().getHostContext()!)
 
     // 更新应用版本号
     const packageInfo = await getPackageInfo()
@@ -905,6 +898,10 @@ struct Index {
   registerEvent() {
     // 通知事件
     EventHub.on(EventKey.EnabledNotice, async (enadblNotice: boolean) => {
+      // 任意分支结束后同步一次通知开关到共享 preferences（VPN 扩展进程读取）
+      const syncNoticePrefs = () => {
+        syncVpnNoticePrefs(this.context)
+      }
       try {
         // 先获取最新权限状态
         const currentStatus = await notificationManager.isNotificationEnabled()
@@ -912,6 +909,7 @@ struct Index {
           // 已有权限时
           // 显示通知设置 显式动画
           this.uiConfig.Enablednotice = enadblNotice ?? true
+          syncNoticePrefs()
         } else {
           // 没有授权时
           if (!this.uiConfig.isRequestNotification) {
@@ -920,6 +918,7 @@ struct Index {
               await notificationManager.requestEnableNotification(this.context)
               this.uiConfig.isRequestNotification = true
               this.uiConfig.Enablednotice = true
+              syncNoticePrefs()
             } catch (err) {
               if ((err as BusinessError).code === 1600004) {
                 hilog.error(0xFF00, 'Index-Notice', '用户拒绝授权')
@@ -928,6 +927,7 @@ struct Index {
                 // 标记已经请求过授权
                 this.uiConfig.isRequestNotification = true
                 this.promptAction.showToast({ message: $r('app.string.enable_notice_failed') })
+                syncNoticePrefs()
               }
             }
           } else {
@@ -953,47 +953,15 @@ struct Index {
         appFlowingState.totalTraffic = total
       }
       job()
+      // 防重复启动累积（StartVpn 可被重复触发）：先清旧流量轮询
+      clearInterval(this.trafficJob)
       this.trafficJob = setInterval(job, 1000)
       // TODO 卡片后台启动服务后拉起应用关闭再开启会出现一秒的时间显示错误
       this.proxyStartingDuration = PROXY_STARTED_DURATION_INIT_VALUE
-      // 发布常驻通知(默认为当未启用长时后台运行时)
-      if (this.uiConfig.Enablednotice && this.uiConfig.EnabledPermanentnotice && (!this.uiConfig.Enablebackgrounder || this.uiConfig.EnabledCoexistNotice)) {
-        this.noticeJob = Date.now()
-        let up = '0'
-        let down = '0'
-        try {
-          Xb_NotificationUtils.publishTextNotification(this.context, this.noticeJob,
-            {
-              title: `${this.appConfig.currentProxyName ?? 'ClashBox'}`,
-              text: `${up}/s ↑ ${down}/s ↓`,
-            },
-            this.uiConfig.EnabledStatusNotice ? notificationManager.SlotType.SERVICE_INFORMATION :
-              notificationManager.SlotType.CONTENT_INFORMATION,
-            // 服务提醒类型 -> LEVEL_HIGH; CONTENT_INFORMATION -> LEVEL_MIN
-            { abilityName: 'EntryAbility' })
-        } catch (err) {
-          hilog.info(0xFF00, 'NotificationUtils', `文本通知ID: ${this.noticeJob}发布错误: ${err} `);
-        }
-        // 更新通知
-        this.updateNoticeJob = setInterval(async () => {
-          up = this.appFlowingState.traffics.getLast()?.up?.toString() ?? "0"
-          down = this.appFlowingState.traffics.getLast()?.down?.toString() ?? "0"
-          hilog.info(0xFF00, 'NotificationUtils', `文本通知ID: ${this.noticeJob}更新文本: ${up}/s ↑ ${down}/s ↓ `);
-          try {
-            Xb_NotificationUtils.updateTextNotification(
-              this.noticeJob,
-              {
-                title: `${this.appConfig.currentProxyName ?? 'ClashBox'}`,
-                text: `${up}/s ↑ ${down}/s ↓`,
-              },
-              this.uiConfig.EnabledStatusNotice ? notificationManager.SlotType.SERVICE_INFORMATION :
-                notificationManager.SlotType.CONTENT_INFORMATION, // 服务提醒类型 -> LEVEL_HIGH; CONTENT_INFORMATION -> LEVEL_MIN
-            )
-          } catch (err) {
-            hilog.info(0xFF00, 'NotificationUtils', `文本通知ID: ${this.noticeJob}更新错误: ${err} `);
-          }
-        }, 1500)
-      }
+      // 常驻通知已迁移到 VPN 扩展进程（VpnNoticeController）：扩展进程由系统保活，
+      // UI 退后台被挂起后通知不再停更；发布/刷新条件与格式与原逻辑一致
+      // VPN 运行时刷新订阅自动更新延迟任务注册（防系统侧注册信息丢失）
+      ConfigAutoUpdateService.reset()
       // 发布任务保持通知
       if (this.uiConfig.backgroundKeepTask && this.uiConfig.Enablednotice) {
         Xb_BackgroundRunning.start(this.getUIContext().getHostContext()!)
@@ -1013,11 +981,8 @@ struct Index {
         Xb_BackgroundRunning.stop(this.context)
       }
       clearInterval(this.trafficJob)
-      // 取消通知
-      if (this.uiConfig.Enablednotice && this.uiConfig.EnabledPermanentnotice) {
-        Xb_NotificationUtils.cancelNotification(this.noticeJob)
-        clearInterval(this.updateNoticeJob)
-      }
+      // 取消常驻通知（扩展进程 stopVpn 时也会取消；此处双保险，通知取消是应用级的）
+      notificationManager.cancel(VPN_NOTICE_ID)
       // 关闭实况窗
       LiveViewUtil.stopLiveView().then((result) => {
         console.log(`LiveViewUtil 实况窗停止 result: ${result.resultCode} message: ${result.message}`)
@@ -1144,11 +1109,7 @@ struct Index {
     // 统一注销根目录事件
     EventHub.off(EventKey.FetchProfile)
     EventHub.off(EventKey.FetchProxyGroup)
-    // 取消通知
-    if (this.uiConfig.Enablednotice && this.uiConfig.EnabledPermanentnotice) {
-      Xb_NotificationUtils.cancelNotification(this.noticeJob)
-      clearInterval(this.updateNoticeJob)
-    }
+    // 常驻通知由 VPN 扩展进程管理，UI 销毁时不再取消（UI 退后台挂起后通知仍需刷新）
     // 纪录软件关闭时间
     this.uiConfig.useTime = new Date().getTime()
     this.unRegisterEvent()
