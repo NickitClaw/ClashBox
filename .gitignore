@@ -28,3 +28,6 @@ proxy_core/src/flclash/libflclash.so
 run.sh
 internalTesting
 profiler
+# Versioned CI workflows; other local dot-directories remain ignored.
+!/.github/
+!/.github/**

@@ -1,0 +1,14 @@
+{
+  "name": "clashbox-development-checks",
+  "private": true,
+  "scripts": {
+    "test": "node --test tests/regression.cjs",
+    "check:rpc": "node scripts/generate-rpc.cjs --check",
+    "check:native": "node scripts/native-provenance.cjs --check arm64-v8a",
+    "check": "node scripts/check.cjs"
+  },
+  "devDependencies": {
+    "typescript": "4.9.5",
+    "yaml": "2.8.0"
+  }
+}

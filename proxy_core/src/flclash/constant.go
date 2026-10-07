@@ -17,9 +17,10 @@ type ConfigExtendedParams struct {
 }
 
 type GenerateConfigParams struct {
-	ProfileId string               `json:"profile-id"`
-	Config    config.RawConfig     `json:"config" `
-	Params    ConfigExtendedParams `json:"params"`
+	ProfileId  string               `json:"profile-id"`
+	SourcePath *string              `json:"source-path,omitempty"`
+	Config     config.RawConfig     `json:"config" `
+	Params     ConfigExtendedParams `json:"params"`
 }
 
 type ChangeProxyParams struct {

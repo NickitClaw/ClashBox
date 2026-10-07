@@ -54,9 +54,12 @@ struct FavoriteConfiguration {
             .height(this.favoriteProfiles.size - 1 == 1 ? '50%' : '32%')
             .onClick(async () => {
               if (!this.isShowHomeEdit) {
-                this.appConfig.currentProfileId = f[0]
-                EventHub.sendEvent(EventKey.LoadClashConfig)
-                await ClashViewModel.loadConfig(false, 'FavoriteConfiguration-点击收藏行');
+                try {
+                  if (!await ClashViewModel.activateProfile(f[0])) return;
+                } catch (e) {
+                  Xb_ToastUtil.showToast({ message: (e as Error).message });
+                  return;
+                }
                 Xb_ToastUtil.showToast({message: getResourceString($r('app.string.load_success'), this)})
                 if (this.uiConfig.isVibrate) {
                   customVibrator.vibratorTriggerOfHapticClockTimer()

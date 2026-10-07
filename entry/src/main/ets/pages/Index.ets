@@ -1,3 +1,5 @@
+import { VpnPhase, VpnSnapshot } from 'proxy_core/src/main/ets/rpc/RpcContract.generated';
+import { initialVpnState, vpnStateLabel } from 'proxy_core/src/main/ets/rpc/VpnLifecycleState';
 // Index
 import { curves, LengthMetrics, mediaquery } from '@kit.ArkUI'
 import Home from './HomePage'
@@ -175,6 +177,7 @@ struct Index {
   // 是否开启`Index`页面的前景模糊
   @Provide('isEnableIndexForegroundBlur') isEnableIndexForegroundBlur: boolean = false
   // 代理启动变量
+  @StorageProp('vpnState') vpnState: VpnSnapshot = initialVpnState(VpnPhase.Unknown);
   @Provide proxyEnabled: boolean = false
   // 前台判断变量
   @StorageProp('ForwardState') isForward: boolean = true
@@ -508,9 +511,9 @@ struct Index {
   @Builder
   FloatBarFunctionContentBuilder() {
     if (this.widthBp <= 2 && (this.tabCurrentPage == 0 || this.uiConfig.needProxyStart)) {
-      Text(this.proxyStartingDuration)
+      Text(this.vpnState.phase === VpnPhase.Running ? this.proxyStartingDuration : vpnStateLabel(this.vpnState.phase))
         .fontSize(20).fontWeight(FontWeight.Bold)
-        .fontColor(this.proxyEnabled ? Color.White : Color.Transparent)
+        .fontColor(this.vpnState.phase === VpnPhase.Stopped ? Color.Transparent : Color.White)
     }
   }
 
@@ -942,6 +945,9 @@ struct Index {
       }
     })
     const appFlowingState = AppStorage.get<AppFlowingState>("appFlowingState") ?? new AppFlowingState()
+    EventHub.on(EventKey.VpnStateChanged, (state: VpnSnapshot) => {
+      this.proxyEnabled = state.running;
+    });
     // 启动Clash后
     EventHub.on(EventKey.StartedClash, () => {
       const job = async () => {
@@ -1126,6 +1132,7 @@ struct Index {
     EventHub.off(EventKey.FetchProxyGroup)
     EventHub.off(EventKey.ShareBundle)
     EventHub.off(EventKey.EnabledNotice)
+    EventHub.off(EventKey.VpnStateChanged)
     EventHub.off(EventKey.StopedClash)
     EventHub.off(EventKey.StartedClash)
     EventHub.off(EventKey.ExportLog)

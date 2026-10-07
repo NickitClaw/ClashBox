@@ -25,7 +25,8 @@ export enum EventKey{
   AddConfig = 10021,
   TestAllDelay = 10022,
   SwitchButtonPosition = 10023,
-  ReLoadAccessControl = 10024
+  ReLoadAccessControl = 10024,
+  VpnStateChanged = 10025
 }
 
 export class EventHub{

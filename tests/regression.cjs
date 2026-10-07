@@ -1,10 +1,10 @@
 // Regression tests execute repository source with controlled HarmonyOS/native API doubles.
-// Run: node --test tests/regression.cjs (after ohpm install and DevEco installation).
+// Run: npm ci && npm test. CLASHBOX_TYPESCRIPT optionally selects the DevEco compiler.
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 const assert = require('assert/strict');
-const ts = require(process.env.CLASHBOX_TYPESCRIPT || '/Applications/DevEco-Studio.app/Contents/tools/hvigor/hvigor-ohos-plugin/node_modules/typescript/lib/typescript.js');
+const ts = require(process.env.CLASHBOX_TYPESCRIPT || 'typescript');
 const { test } = require('node:test');
 const root = path.resolve(__dirname, '..');
 const quiet = { log() {}, info() {}, warn() {}, error() {}, debug() {} };
@@ -54,11 +54,13 @@ function noticeFixture(enabled = true, permission = () => Promise.resolve(true))
   }, time);
   return { instance: new mod.VpnNoticeController({ applicationInfo: { name: 'review' } }), time, prefs, actions };
 }
-const yaml = require(path.join(root, 'oh_modules/yaml/dist/index.js'));
+const yaml = require('yaml');
 const { YamlUtils } = load('proxy_core/src/main/ets/utils/YamlUtils.ts', { yaml, '@kit.ArkTS': { util } });
 const rpcFrames = load('proxy_core/src/main/ets/rpc/RpcFrame.ets', { '@kit.ArkTS': { util } });
 const rpcGenerated = load('proxy_core/src/main/ets/rpc/RpcContract.generated.ts');
 const rpcContract = load('proxy_core/src/main/ets/rpc/RpcContract.ets', { './RpcContract.generated': rpcGenerated, '@kit.ArkTS': { JSON } });
+const lifecycleModule = load('proxy_core/src/main/ets/rpc/VpnLifecycleState.ets', { './RpcContract.generated': rpcGenerated });
+const activationModule = load('entry/src/main/ets/common/services/ConfigActivationService.ets');
 const flush = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
 const deferred = () => { let resolve; const promise = new Promise(r => resolve = r); return { promise, resolve }; };
 const nodeOf = uri => yaml.parse(YamlUtils.convertUniversalToClashYaml(uri)).proxies[0];
@@ -120,6 +122,7 @@ test('Native and remote compatibility checks reject legacy or mixed builds', () 
 });
 function rpcSocketFixture() {
   const clients = [], time = clock();
+  const snapshots = new Map();
   class Socket {
     constructor() { this.handlers = {}; this.closed = false; this.requests = []; clients.push(this); }
     on(name, fn) { this.handlers[name] = fn; } off(name) { delete this.handlers[name]; }
@@ -131,15 +134,16 @@ function rpcSocketFixture() {
   }
   const { SocketProxyService } = load('proxy_core/src/main/ets/rpc/SocketProxyService.ets', {
     '@kit.NetworkKit': { socket: { constructLocalSocketInstance: () => new Socket() } },
-    '@kit.ArkTS': { JSON, util }, '@kit.CoreFileKit': { fileIo: { access: async () => true } },
+    '@kit.ArkTS': { JSON, util }, '@kit.CoreFileKit': { fileIo: { access: async () => true, unlink: async path => snapshots.delete(path) } },
+    '../profile/ProfileStorage': { generateUUID: () => 'test', writeProfileText: async (path, text) => snapshots.set(path, text) },
     './RpcFrame': rpcFrames, './IClashManager': rpcGenerated, './RpcContract': rpcContract, './RpcContract.generated': rpcGenerated
   }, time);
-  const service = new SocketProxyService(); service.init({ filesDir: '/mock' });
-  return { service, clients, time };
+  const service = new SocketProxyService(); service.init({ filesDir: '/mock', tempDir: '/tmp' });
+  return { service, clients, time, snapshots };
 }
 test('Concurrent business calls wait for one compatibility handshake, then use the correct endpoints', async () => {
   const f = rpcSocketFixture();
-  const version = f.service.getVersion(), start = f.service.startClash(); await flush();
+  const version = f.service.getVersion(), start = f.service.getRuntime(); await flush();
   assert.equal(f.clients.length, 1); assert.equal(f.clients[0].requests[0].method, 34);
   f.clients[0].respond({ protocolVersion: 1, method: 34, result: JSON.stringify(compatibleCore()) }); await flush();
   assert.equal(f.clients.length, 3);
@@ -147,9 +151,9 @@ test('Concurrent business calls wait for one compatibility handshake, then use t
     const request = client.requests[0];
     assert.equal(request.protocolVersion, 1);
     assert.ok(client.path.endsWith(request.method === 13 ? '/ClashBox.sock' : '/clash_go.sock'));
-    client.respond({ protocolVersion: 1, method: request.method, result: request.method === 13 ? true : 'core' });
+    client.respond({ protocolVersion: 1, method: request.method, result: request.method === 26 ? '100' : 'core' });
   }
-  assert.equal(await version, 'core'); assert.equal(await start, true);
+  assert.equal(await version, 'core'); assert.equal(await start, 100);
   assert.equal(f.time.timeouts.size, 0); assert.ok(f.clients.every(c => c.closed));
   await f.service.ensureCompatibility(); assert.equal(f.clients.length, 3);
 });
@@ -638,6 +642,7 @@ function vpnFixture({ failTun = false, stopGate } = {}) {
   const mod = load('proxy_core/src/main/ets/rpc/FlClashVpnService.ets', {
     '@kit.NetworkKit': network, '@kit.ArkTS': { JSON, util }, './CommonVpnService': common, './RpcFrame': rpcFrames,
     './IClashManager': rpcGenerated, './RpcContract': rpcContract, './RpcContract.generated': rpcGenerated,
+    './VpnLifecycleState': lifecycleModule,
     'libflclash.so': {
       stopTun: async () => { calls.push('stopTun'); if (stopGate) await stopGate.promise; calls.push('stopTunDone'); },
       startTun: async () => { calls.push('startTun'); return true; }, startIpc() {},
@@ -650,7 +655,7 @@ function vpnFixture({ failTun = false, stopGate } = {}) {
   return { service, calls, time, get attempts() { return attempts; } };
 }
 test('Live IPC does not hide failed TUN recreation; retries end after three failures', async () => {
-  const f = vpnFixture({ failTun: true }); f.service.desiredRunning = true; f.service.vpnActive = true;
+  const f = vpnFixture({ failTun: true }); f.service.lifecycle.request(true); f.service.lifecycle.move(rpcGenerated.VpnPhase.Running);
   for (let i = 1; i <= 3; i++) {
     assert.equal(await f.service.healKernelInternal(), false);
     assert.equal(f.service.healFailures, i); assert.equal(f.service.vpnActive, false);
@@ -690,19 +695,24 @@ test('Reconnect notification is handled even when the UI running flag is stale',
 function viewModelFixture() {
   const calls = [], events = [];
   const { ClashViewModel } = load('entry/src/main/ets/entryability/ClashViewModel.ets', {
+    '../common/services/ConfigActivationService': activationModule,
+    'proxy_core/src/main/ets/rpc/RpcContract.generated': rpcGenerated,
+    'proxy_core/src/main/ets/rpc/VpnLifecycleState': lifecycleModule,
     'proxy_core/src/main/ets/ProfileRepo': { ProfileRepo: class {} },
     'proxy_core': { SocketProxyService: class {} },
     '../common/utils/HHmmssTimer': { Timer: class { reset() { calls.push('resetTimer'); } start() { calls.push('timer'); } } },
     '../common/EventHub': { EventHub: { sendEvent: e => events.push(e) }, EventKey: { StartedClash: 'started', StopedClash: 'stopped' } },
-    '../common/utils/CardManageUtil': { cardManager: { pushCartProxyMode: state => calls.push(state ? 'runningCard' : 'stoppedCard'), pushCartVpnServiceTime() {} } },
+    '../common/utils/CardManageUtil': { cardManager: { pushCartProxyMode: state => calls.push(state ? 'runningCard' : 'stoppedCard'), pushCartVpnState: state => calls.push(state.running ? 'runningCard' : 'stoppedCard'), pushCartVpnServiceTime() {} } },
     '../common/utils/VpnNoticeConfigSync': { syncVpnNoticePrefs: async () => {} },
     '@kit.PerformanceAnalysisKit': { hilog: quiet }
-  });
+  }, { AppStorage: { setOrCreate() {} } });
   const service = new ClashViewModel(); service.loadConfig = async () => calls.push('loadConfig');
   service.loadVpnOptions = async () => calls.push('loadOptions');
   service.socketProxy.isSocketReady = async () => true;
   service.socketProxy.ensureCompatibility = async () => ({});
   service.socketProxy.getRuntime = async () => 0;
+  service.socketProxy.queryVpnState = async () => ({ phase: calls.lastIndexOf('start') > calls.lastIndexOf('stop') ? 'running' : 'stopped',
+    running: calls.lastIndexOf('start') > calls.lastIndexOf('stop'), desiredRunning: calls.lastIndexOf('start') > calls.lastIndexOf('stop'), startedAt: 100, generation: 1, error: '' });
   service.socketProxy.startClash = async () => { calls.push('start'); return true; };
   service.socketProxy.stopClash = async () => { calls.push('stop'); return true; };
   return { service, calls, events };
@@ -749,4 +759,121 @@ test('Profile deletion awaits file transaction completion before deleting the da
   f.service.profileRepo.delete = async () => { removed = true; };
   const deleting = f.service.deleteProfile('A'); await entered.promise; assert.equal(removed, false);
   gate.resolve(); await deleting; assert.equal(removed, true);
+});
+
+function activationFixture() {
+  const state = { selected: 'A', running: '', downloaded: [], applied: [], stopped: 0, failPrepare: '', failApply: '' };
+  const host = {
+    selectedId: () => state.selected,
+    prepare: async (id, update, patch) => {
+      if (update) state.downloaded.push(id);
+      if (state.failPrepare === id) throw new Error('download failed');
+      return { id, name: id, payload: { 'profile-id': id, source: `${id}: saved bytes`, config: {}, params: { 'is-patch': patch } } };
+    },
+    apply: async snapshot => {
+      state.applied.push(snapshot.id);
+      if (state.failApply === snapshot.id) throw new Error('kernel apply failed');
+      state.running = snapshot.payload.source;
+    },
+    commit: snapshot => { state.selected = snapshot.id; },
+    stop: async () => { state.stopped++; state.running = ''; }
+  };
+  return { state, host, service: new activationModule.ConfigActivationService(host) };
+}
+test('Configuration selection commits after download and kernel ack; failed prepare never mutates selection', async () => {
+  const f = activationFixture(); await f.service.reload(false);
+  const gate = deferred(), entered = deferred(), apply = f.host.apply;
+  f.host.apply = async snapshot => { if (snapshot.id === 'B') { entered.resolve(); await gate.promise; } await apply(snapshot); };
+  const changing = f.service.activate('B', true); await entered.promise;
+  assert.equal(f.state.selected, 'A'); assert.deepEqual(f.state.downloaded, ['B']);
+  gate.resolve(); assert.equal(await changing, true); assert.equal(f.state.selected, 'B');
+  f.state.failPrepare = 'C'; await assert.rejects(f.service.activate('C', true), /download failed/);
+  assert.equal(f.state.selected, 'B'); assert.equal(f.state.running, 'B: saved bytes');
+});
+test('Failed or superseded activation restores the confirmed bytes; queued reload resolves the new selection', async () => {
+  const f = activationFixture(); await f.service.reload(false);
+  f.state.failApply = 'B'; await assert.rejects(f.service.activate('B'), /kernel apply failed/);
+  assert.equal(f.state.selected, 'A'); assert.equal(f.state.running, 'A: saved bytes');
+  f.state.failApply = ''; const gate = deferred(), entered = deferred(), apply = f.host.apply;
+  f.host.apply = async snapshot => { if (snapshot.id === 'B') { entered.resolve(); await gate.promise; } await apply(snapshot); };
+  const old = f.service.activate('B'); await entered.promise;
+  const latest = f.service.activate('C'), reloading = f.service.reload(false); gate.resolve();
+  assert.equal(await old, false); assert.equal(await latest, true); await reloading;
+  assert.equal(f.state.selected, 'C'); assert.equal(f.state.running, 'C: saved bytes');
+  assert.deepEqual(f.state.applied.slice(-4), ['B', 'A', 'C', 'C']);
+});
+test('Superseded download cannot reach apply, rollback failure stops VPN, and patches preserve active source', async () => {
+  const f = activationFixture(); await f.service.reload(false);
+  const gate = deferred(), entered = deferred(), prepare = f.host.prepare;
+  f.host.prepare = async (...args) => { if (args[0] === 'B') { entered.resolve(); await gate.promise; } return prepare(...args); };
+  const old = f.service.activate('B', true); await entered.promise; const latest = f.service.activate('C'); gate.resolve();
+  assert.equal(await old, false); await latest; assert.ok(!f.state.applied.includes('B'));
+  f.host.prepare = async (...args) => { const snapshot = await prepare(...args); snapshot.payload.source = 'changed on disk'; return snapshot; };
+  await f.service.reload(true); assert.equal(f.state.running, 'C: saved bytes');
+  f.host.apply = async () => { throw new Error('kernel unavailable'); };
+  await assert.rejects(f.service.activate('D'), /恢复失败/); assert.equal(f.state.stopped, 1); assert.equal(f.state.selected, 'C');
+});
+test('Socket loadConfig leaves snapshots unchanged across repeated activation and rollback', async () => {
+  const f = rpcSocketFixture(), payload = { 'profile-id': 'A', source: 'rules: []', config: {}, params: {} }, sent = [];
+  f.service.sendMessageRequest = async (_, params) => { sent.push(JSON.parse(params[0])); return ''; };
+  await f.service.loadConfig(payload); await f.service.loadConfig(payload);
+  assert.equal(payload['profile-id'], 'A'); assert.deepEqual(sent.map(s => s['profile-id']), ['A/config', 'A/config']);
+});
+
+test('VPN state RPC observes start/stop completion and snapshots cannot mutate the service', async () => {
+  const gate = deferred(), f = vpnFixture({ stopGate: gate });
+  const query = async () => JSON.parse(await f.service.onRemoteMessage(1, []));
+  assert.equal((await query()).phase, 'stopped');
+  const starting = f.service.startVpn(); await flush();
+  assert.equal((await query()).phase, 'starting'); assert.equal((await query()).running, false);
+  gate.resolve(); assert.equal(await starting, true);
+  const running = await query(); assert.equal(running.phase, 'running'); assert.ok(running.startedAt > 0);
+  running.phase = 'failed'; assert.equal((await query()).phase, 'running');
+  await f.service.stopVpn(); const stopped = await query();
+  assert.equal(stopped.phase, 'stopped'); assert.equal(stopped.running, false); assert.equal(stopped.startedAt, 0);
+});
+test('Failed stop stays unconfirmed, and recovery exhaustion is a terminal failed state', async () => {
+  const f = vpnFixture({ failTun: true }); f.service.lifecycle.request(true);
+  for (let i = 0; i < 4; i++) await f.service.healKernelInternal();
+  assert.equal(f.service.lifecycle.snapshot().phase, 'failed');
+  assert.equal(f.service.lifecycle.snapshot().desiredRunning, false);
+  f.service.lifecycle.request(true); f.service.lifecycle.move(rpcGenerated.VpnPhase.Running);
+  f.service.releaseTun = async () => { throw new Error('native stop failed'); };
+  assert.equal(await f.service.stopVpn(), false);
+  assert.equal(f.service.lifecycle.snapshot().phase, 'unknown');
+  assert.equal(f.service.lifecycle.snapshot().running, true);
+});
+test('UI query failure preserves the last known running state and never emits a stopped event', async () => {
+  const f = viewModelFixture();
+  f.service.socketProxy.queryVpnState = async () => ({ phase: 'running', running: true, desiredRunning: true, startedAt: 123, generation: 1, error: '' });
+  await f.service.refreshVpnState(); assert.equal(f.service.vpnStarted, true); assert.ok(f.calls.includes('timer'));
+  f.events.length = 0; f.calls.length = 0;
+  f.service.socketProxy.queryVpnState = async () => { throw new Error('timeout'); };
+  await f.service.refreshVpnState();
+  assert.equal(f.service.vpnState.phase, 'unknown'); assert.equal(f.service.vpnStarted, true);
+  assert.ok(!f.events.includes('stopped')); assert.ok(!f.calls.includes('stoppedCard')); assert.ok(!f.calls.includes('resetTimer'));
+});
+test('Late state queries cannot overwrite newer user intent', async () => {
+  const f = viewModelFixture(), gate = deferred();
+  f.service.socketProxy.queryVpnState = async () => { await gate.promise; return { phase: 'running', running: true, desiredRunning: true, startedAt: 123, generation: 1, error: '' }; };
+  const refreshing = f.service.refreshVpnState(); await flush(); await f.service.StopVpn(); gate.resolve(); await refreshing;
+  assert.equal(f.service.vpnStarted, false); assert.equal(f.service.desiredRunning, false); assert.ok(!f.events.includes('started'));
+});
+test('VPN control and state requests remain available when the Go handshake is unavailable', async () => {
+  const f = rpcSocketFixture(); f.service.ensureCompatibility = async () => { throw new Error('Go unavailable'); };
+  const stopping = f.service.stopClash(); await flush(); assert.ok(f.clients[0].path.endsWith('/ClashBox.sock'));
+  f.clients[0].respond({ protocolVersion: 1, method: 14, result: true }); assert.equal(await stopping, true);
+  const querying = f.service.queryVpnState(); await flush();
+  f.clients[1].respond({ protocolVersion: 1, method: 1, result: JSON.stringify(lifecycleModule.initialVpnState()) });
+  assert.equal((await querying).phase, 'stopped');
+});
+test('Large activation snapshots stay outside RPC frames and temporary files close on failure', async () => {
+  const f = rpcSocketFixture(), source = 'x'.repeat(rpcFrames.MAX_RPC_FRAME_BYTES + 10);
+  f.service.sendMessageRequest = async (_, params) => {
+    assert.ok(params[0].length < 300);
+    const request = JSON.parse(params[0]); assert.equal(f.snapshots.get(request['source-path']), source);
+    throw new Error('connection failed');
+  };
+  await assert.rejects(f.service.loadConfig({ 'profile-id': 'A', source, config: {}, params: {} }), /connection failed/);
+  assert.equal(f.snapshots.size, 0);
 });

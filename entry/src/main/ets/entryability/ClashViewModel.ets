@@ -1,3 +1,7 @@
+import { VpnPhase, VpnSnapshot } from 'proxy_core/src/main/ets/rpc/RpcContract.generated';
+import { initialVpnState } from 'proxy_core/src/main/ets/rpc/VpnLifecycleState';
+import { ConfigActivationService, ConfigActivationHost, ConfigSnapshot } from '../common/services/ConfigActivationService';
+import { ProfileStorage } from 'proxy_core/src/main/ets/profile/ProfileStorage';
 import { assertNativeCompatibility } from 'proxy_core/src/main/ets/rpc/NativeCompatibility';
 import { ProfileRepo } from "proxy_core/src/main/ets/ProfileRepo";
 import { Context, Want } from "@kit.AbilityKit";
@@ -464,23 +468,116 @@ export class ClashViewModel {
     }
   }
 
-  async loadProfileAndConfig(id: string, config: ClashConfig | null = null, params: ConfigExtendedParams | null= null){
-    let result = await this.socketProxy.loadConfig({
-      "profile-id": id,
-      config: config ?? new ClashConfig(),
-      params: params ?? {} as ConfigExtendedParams
-    } as UpdateConfigParams)
-    if (result != ""){
-      throw new Error(result)
+  private activation = new ConfigActivationService({
+    selectedId: (): string => (AppStorage.get<AppConfig>('appConfig') || cardManager.getAppConfig())?.currentProfileId ?? '',
+    prepare: (id: string, update: boolean, patch: boolean, cancelled: () => boolean): Promise<ConfigSnapshot> =>
+      this.prepareActivation(id, update, patch, cancelled),
+    apply: async (snapshot: ConfigSnapshot): Promise<void> => {
+      const error = await this.socketProxy.loadConfig(snapshot.payload);
+      if (error !== '') throw new Error(error);
+    },
+    commit: (snapshot: ConfigSnapshot): void => {
+      const app = AppStorage.get<AppConfig>('appConfig') || cardManager.getAppConfig() || new AppConfig();
+      const next = JSON.parse(JSON.stringify(app)) as AppConfig;
+      next.currentProfileId = snapshot.id;
+      next.currentProfileName = snapshot.name;
+      try {
+        cardManager.setAppConfig(next);
+        AppStorage.setOrCreate('appConfig', next);
+      } catch (e) {
+        AppStorage.setOrCreate('appConfig', app);
+        cardManager.setAppConfig(app);
+        throw e as Error;
+      }
+      try { EventHub.sendEvent(EventKey.FetchProxyGroup, null); } catch (_) { console.warn('配置列表刷新失败'); }
+    },
+    stop: async (): Promise<void> => {
+      if (!await this.socketProxy.stopClash()) throw new Error('内核未确认 VPN 停止');
+      await this.refreshVpnState();
     }
-    EventHub.sendEvent(EventKey.FetchProxyGroup, null)
+  } as ConfigActivationHost);
+
+  private async prepareActivation(id: string, update: boolean, patch: boolean,
+    cancelled: () => boolean): Promise<ConfigSnapshot> {
+    const profile = await this.profileRepo.query(id);
+    if (!profile) throw new Error('配置不存在或已被删除');
+    const config = AppStorage.get<ClashConfig>('clashConfig') || cardManager.getClashConfig() || new ClashConfig();
+    profile.loadContext(this.context, config['global-ua']);
+    profile.shouldCancelUpdate = cancelled;
+    if (update && profile.type === ProfileType.Url && !profile.isUpdating) {
+      await profile.update(this.socketProxy);
+      await this.profileRepo.updateDownloadMetadata(profile);
+      EventHub.sendEvent(EventKey.FetchProfile, null);
+    }
+    const source = await new ProfileStorage(this.context, id, cancelled).transaction((files) => files.read());
+    if (!source) throw new Error('配置文件不存在或为空');
+    const app = AppStorage.get<AppConfig>('appConfig') || cardManager.getAppConfig();
+    const payload: UpdateConfigParams = { 'profile-id': id, source: source, config: config,
+      params: { 'is-patch': patch, 'is-compatible': true, 'override-dns': config.overrideDns ?? false,
+        'selected-map': profile.getSelectedMap(), 'test-url': app?.testUrl || new AppConfig().testUrl } };
+    return { id: id, name: profile.name ?? id, payload: JSON.parse(JSON.stringify(payload)) as UpdateConfigParams };
   }
+
+  async activateProfile(id: string, update: boolean = false): Promise<boolean> {
+    return this.activation.activate(id, update);
+  }
+
   private desiredRunning: boolean = false
   private vpnOperation: Promise<void> | undefined
   private vpnQueue: Promise<void> = Promise.resolve()
   private intentGeneration: number = 0
   private lastRecoveryAttempt: number = 0
-  vpnStarted = false
+  private vpnState: VpnSnapshot = initialVpnState(VpnPhase.Unknown);
+  get vpnStarted(): boolean { return this.vpnState.running; }
+  get vpnRequested(): boolean { return this.desiredRunning; }
+  private stateTimer: number = -1;
+  private stateQueryRunning: boolean = false;
+
+  startStateMonitoring(): void {
+    this.stopStateMonitoring();
+    this.refreshVpnState();
+    this.stateTimer = setInterval(() => { this.refreshVpnState(); }, 2000);
+  }
+
+  stopStateMonitoring(): void {
+    if (this.stateTimer !== -1) clearInterval(this.stateTimer);
+    this.stateTimer = -1;
+  }
+
+  private publishVpnState(state: VpnSnapshot): void {
+    const previous = this.vpnState;
+    this.vpnState = state;
+    AppStorage.setOrCreate('vpnState', state);
+    EventHub.sendEvent(EventKey.VpnStateChanged, state);
+    cardManager.pushCartVpnState(state);
+    if (state.phase === VpnPhase.Unknown) return;
+    if (state.running && (!previous.running || state.startedAt !== previous.startedAt)) {
+      EventHub.sendEvent(EventKey.StartedClash);
+      this.proxyStartedTimer.start((time) => {
+        EventHub.sendEvent(EventKey.ProxyDuration, time);
+        cardManager.pushCartVpnServiceTime(number2Time(time));
+      }, state.startedAt);
+    } else if (!state.running && (previous.running || previous.phase === VpnPhase.Unknown)) {
+      EventHub.sendEvent(EventKey.StopedClash);
+      this.proxyStartedTimer.reset();
+    }
+  }
+
+  private projectVpnPhase(phase: VpnPhase, error: string = ''): void {
+    const previous = this.vpnState;
+    this.publishVpnState({ phase: phase, running: previous.running, startedAt: previous.startedAt,
+      desiredRunning: this.desiredRunning, generation: this.intentGeneration, error: error });
+  }
+
+  private async reconcileVpnState(): Promise<void> {
+    try {
+      const state = await this.socketProxy.queryVpnState();
+      this.desiredRunning = state.desiredRunning;
+      this.publishVpnState(state);
+    } catch (e) {
+      this.projectVpnPhase(VpnPhase.Unknown, (e as Error).message);
+    }
+  }
 
   async ReStartVpn(): Promise<void> {
     if (!this.vpnStarted) return
@@ -489,18 +586,19 @@ export class ClashViewModel {
   }
 
   async refreshVpnState(): Promise<void> {
-    if (this.vpnOperation) return
-    const generation = this.intentGeneration
-    let active = false
-    try { active = Number(await this.socketProxy.getRuntime()) > 0 } catch (_) {}
-    if (this.vpnOperation || generation !== this.intentGeneration) return
-    if (active !== this.vpnStarted) {
-      this.vpnStarted = active
-      cardManager.pushCartProxyMode(active)
-      EventHub.sendEvent(active ? EventKey.StartedClash : EventKey.StopedClash)
-      if (!active) this.proxyStartedTimer.reset()
-    }
-    if (active) this.desiredRunning = true
+    if (this.vpnOperation || this.stateQueryRunning) return;
+    this.stateQueryRunning = true;
+    const generation = this.intentGeneration;
+    try {
+      const state = await this.socketProxy.queryVpnState();
+      if (this.vpnOperation || generation !== this.intentGeneration) return;
+      this.desiredRunning = state.desiredRunning;
+      this.publishVpnState(state);
+    } catch (e) {
+      if (!this.vpnOperation && generation === this.intentGeneration) {
+        this.projectVpnPhase(VpnPhase.Unknown, (e as Error).message);
+      }
+    } finally { this.stateQueryRunning = false; }
   }
 
   async RecoverVpn(): Promise<void> {
@@ -527,46 +625,34 @@ export class ClashViewModel {
   }
 
   private async startVpnConfirmed(generation: number): Promise<void> {
-    if (!this.desiredRunning || generation !== this.intentGeneration) return
+    if (!this.desiredRunning || generation !== this.intentGeneration) return;
+    this.projectVpnPhase(VpnPhase.Starting);
     try {
-      let ready = await this.socketProxy.isSocketReady()
-      if (!ready) ready = await this.ChangeCore(undefined, true)
-      if (!ready) throw new Error('VPN 扩展未就绪')
-      await this.socketProxy.ensureCompatibility()
-      if (!this.desiredRunning || generation !== this.intentGeneration) return
-      if (Number(await this.socketProxy.getRuntime()) > 0) {
-        this.vpnStarted = true
-        return
-      }
-      this.vpnStarted = false
-      await this.loadConfig(false, 'StartVpn')
-      if (this.context) await syncVpnNoticePrefs(this.context)
-      await this.loadVpnOptions()
-      if (!this.desiredRunning || generation !== this.intentGeneration) return
-      const started = await this.socketProxy.startClash()
-      if (!started) throw new Error('VPN 启动失败')
+      let ready = await this.socketProxy.isSocketReady();
+      if (!ready) ready = await this.ChangeCore(undefined, true);
+      if (!ready) throw new Error('VPN 扩展未就绪');
+      await this.socketProxy.ensureCompatibility();
+      if (!this.desiredRunning || generation !== this.intentGeneration) return;
+      const current = await this.socketProxy.queryVpnState();
+      if (!this.desiredRunning || generation !== this.intentGeneration) return;
+      if (current.running) { this.publishVpnState(current); return; }
+      if (await this.loadConfig(false, 'StartVpn') === false) throw new Error('请先选择有效配置');
+      if (this.context) await syncVpnNoticePrefs(this.context);
+      await this.loadVpnOptions();
+      if (!this.desiredRunning || generation !== this.intentGeneration) return;
+      const started = await this.socketProxy.startClash();
       if (!this.desiredRunning || generation !== this.intentGeneration) {
-        await this.socketProxy.stopClash()
-        return
+        if (started) await this.socketProxy.stopClash();
+        return;
       }
-      this.vpnStarted = true
-      EventHub.sendEvent(EventKey.StartedClash)
-      EventHub.sendEvent(EventKey.checkIpInfo)
-      const runTime = Number(await this.getRuntime())
-      if (Number.isFinite(runTime) && runTime > 0) {
-        this.proxyStartedTimer.start((time) => {
-          EventHub.sendEvent(EventKey.ProxyDuration, time)
-          cardManager.pushCartVpnServiceTime(number2Time(time))
-        }, runTime)
-      }
-      cardManager.pushCartProxyMode(true)
+      if (!started) throw new Error('VPN 启动失败');
+      const state = await this.socketProxy.queryVpnState();
+      if (generation !== this.intentGeneration) return;
+      this.publishVpnState(state);
+      EventHub.sendEvent(EventKey.checkIpInfo);
     } catch (e) {
-      this.vpnStarted = false
-      if (generation === this.intentGeneration) this.desiredRunning = false
-      this.proxyStartedTimer.reset()
-      cardManager.pushCartProxyMode(false)
-      EventHub.sendEvent(EventKey.StopedClash)
-      throw e as Error
+      if (generation === this.intentGeneration) await this.reconcileVpnState();
+      throw e as Error;
     }
   }
   async loadVpnOptions(){
@@ -618,17 +704,23 @@ export class ClashViewModel {
   }
 
   async StopVpn(): Promise<void> {
-    this.desiredRunning = false
-    ++this.intentGeneration
+    this.desiredRunning = false;
+    const generation = ++this.intentGeneration;
     return this.queueVpnOperation(async () => {
-      if (!await this.socketProxy.stopClash()) throw new Error('内核未确认 VPN 停止')
-      this.vpnStarted = false
-      EventHub.sendEvent(EventKey.StopedClash)
-      EventHub.sendEvent(EventKey.StopedClashEntry)
-      EventHub.sendEvent(EventKey.checkIpInfo)
-      cardManager.pushCartProxyMode(false)
-      this.proxyStartedTimer.reset()
-    })
+      this.projectVpnPhase(VpnPhase.Stopping);
+      try {
+        if (!await this.socketProxy.stopClash()) throw new Error('内核未确认 VPN 停止');
+        const stopped = initialVpnState();
+        stopped.generation = this.intentGeneration;
+        stopped.desiredRunning = this.desiredRunning;
+        this.publishVpnState(stopped);
+        EventHub.sendEvent(EventKey.StopedClashEntry);
+        EventHub.sendEvent(EventKey.checkIpInfo);
+      } catch (e) {
+        if (generation === this.intentGeneration) await this.reconcileVpnState();
+        throw e as Error;
+      }
+    });
   }
 
   async getRuntime(){
@@ -650,23 +742,8 @@ export class ClashViewModel {
 
   proxyGroups :ProxyGroup[] = []
 
-  async loadConfig(patch: boolean = true, name?: string) {
-    console.error(`ClashViewModel.loadConfig 调用方：${name} patch：${patch} 配置开始加载`)
-    let appConfig = AppStorage.get<AppConfig>("appConfig") || cardManager.getAppConfig()
-    let clashConfig = AppStorage.get<ClashConfig>("clashConfig") || cardManager.getClashConfig()
-    const profile = await this.profileRepo.query(appConfig?.currentProfileId)
-    try {
-      await this.loadProfileAndConfig(appConfig?.currentProfileId ?? "", clashConfig, {
-        "is-patch": patch,
-        "is-compatible": true,
-        "override-dns": clashConfig?.overrideDns,
-        "selected-map": profile?.getSelectedMap()
-      } as ConfigExtendedParams)
-      console.log(`ClashViewModel.loadConfig 调用方：${name} patch：${patch} 配加载成功`)
-    } catch (e) {
-      console.error('ClashViewModel.loadConfig 配置加载失败')
-      throw e as Error
-    }
+  async loadConfig(patch: boolean = true, name?: string): Promise<boolean> {
+    return this.activation.reload(patch);
   }
 
   async initGeoIp(){

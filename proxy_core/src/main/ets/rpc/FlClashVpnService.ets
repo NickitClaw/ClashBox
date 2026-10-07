@@ -1,3 +1,4 @@
+import { VpnLifecycleState } from './VpnLifecycleState';
 import { encodeRpcFrame, RpcFrameBuffer } from './RpcFrame';
 import { vpnExtension, socket } from '@kit.NetworkKit';
 import {
@@ -28,7 +29,8 @@ import { Address, AddressWithPrefix, CommonVpnService, cidrToRoute, VpnConfig } 
 import { JSON, util } from '@kit.ArkTS';
 import { fileIo } from '@kit.CoreFileKit';
 import { decodeRpcRequest, decodeRpcResponse, createRpcRequest, rpcSuccess, rpcFailure, RpcError } from './RpcContract';
-import { RpcErrorCode } from './RpcContract.generated';
+import { RpcErrorCode, VpnPhase, VpnSnapshot } from './RpcContract.generated';
+import { common } from '@kit.AbilityKit';
 import { assertNativeCompatibility } from './NativeCompatibility';
 import { ClashRpcType } from './IClashManager';
 import { ConnectionInfo, LogInfo, Proxy, Provider, ProxyGroup, ProxyMode, ProxyType, Traffic } from '../models/Common';
@@ -70,6 +72,10 @@ export interface VpnOptions {
 
 
 export class FlClashVpnService extends CommonVpnService {
+  constructor(context: common.Context, observer?: (state: VpnSnapshot) => void) {
+    super(context);
+    this.lifecycle = new VpnLifecycleState(observer);
+  }
   vpnConnection: vpnExtension.VpnConnection | undefined
   public configPath: string = ""
   protectSocketPath: string = ""
@@ -117,9 +123,10 @@ export class FlClashVpnService extends CommonVpnService {
   /** 连续自愈失败次数 */
   private healFailures: number = 0
   /** VPN 是否处于"应当运行"状态：自愈探活只在其为 true 时进行；stopVpn 与自愈最终失败时置 false */
-  private vpnActive: boolean = false
-  private desiredRunning: boolean = false
-  private intentGeneration: number = 0
+  private lifecycle: VpnLifecycleState;
+  private get vpnActive(): boolean { return this.lifecycle.snapshot().running; }
+  private get desiredRunning(): boolean { return this.lifecycle.snapshot().desiredRunning; }
+  private get intentGeneration(): number { return this.lifecycle.snapshot().generation; }
   /** 内核失联自愈最大重启次数，超过后发"点击重连"通知并停止重试 */
   private static readonly MAX_HEAL_FAILURES: number = 3
   /** 看门狗探活间隔 */
@@ -132,6 +139,10 @@ export class FlClashVpnService extends CommonVpnService {
     // 根据code处理客户端的请求
     return new Promise(async (resolve, reject) => {
       switch (code) {
+        case ClashRpcType.queryTunnelState: {
+          resolve(JSON.stringify(this.lifecycle.snapshot()));
+          break;
+        }
         case ClashRpcType.startClash: {
           // startListener/stopListener 已移入串行 op 内部，保证与 TUN 启停的顺序
           this.startVpn().then((r) => {
@@ -229,8 +240,7 @@ export class FlClashVpnService extends CommonVpnService {
    */
   private enqueueVpnOp(op: VpnOpType): Promise<boolean> {
     if (op !== 'heal') {
-      this.desiredRunning = op === 'start'
-      ++this.intentGeneration
+      this.lifecycle.request(op === 'start')
     }
     return new Promise<boolean>((resolve) => {
       if (op == 'stop') {
@@ -267,11 +277,13 @@ export class FlClashVpnService extends CommonVpnService {
           if (head.op == 'start') {
             result = await this.startVpnInternal(head.generation)
           } else if (head.op == 'stop') {
+            this.lifecycle.move(VpnPhase.Stopping);
             result = await this.stopVpnInternal()
           } else {
             result = await this.healKernelInternal()
           }
         } catch (e) {
+          this.lifecycle.move(VpnPhase.Unknown, (e as Error).message);
           console.error(`ClashVPN op ${head.op} 执行异常: ${(e as Error).message}`)
         }
         head.resolves.forEach((r) => {
@@ -293,8 +305,9 @@ export class FlClashVpnService extends CommonVpnService {
 
   async startVpnInternal(generation: number = this.intentGeneration): Promise<boolean> {
     if (!this.desiredRunning || generation !== this.intentGeneration) return false
+    if (this.vpnActive) return true;
     this.isStopped = false
-    this.vpnActive = false
+    this.lifecycle.move(this.healFailures > 0 ? VpnPhase.Recovering : VpnPhase.Starting);
     try {
       await this.releaseTun()
       if (!this.desiredRunning || generation !== this.intentGeneration) return false
@@ -305,13 +318,13 @@ export class FlClashVpnService extends CommonVpnService {
       const started = await this.startClash(fd, generation)
       if (started !== true) throw new Error('内核未确认 TUN 启动，请重新编译 libflclash.so')
       if (!this.desiredRunning || generation !== this.intentGeneration) throw new Error('VPN 启动已取消')
-      this.vpnActive = true
+      this.lifecycle.move(VpnPhase.Running);
       this.healFailures = 0
       await this.noticeController.start()
       this.startKernelWatchdog()
       return true
     } catch (error) {
-      this.vpnActive = false
+      this.lifecycle.move(this.desiredRunning ? VpnPhase.Recovering : VpnPhase.Stopping, (error as Error).message);
       await this.noticeController.stop()
       try { await this.releaseTun() } finally {
         stopListener()
@@ -341,7 +354,7 @@ export class FlClashVpnService extends CommonVpnService {
   }
 
   async stopVpnInternal(): Promise<boolean> {
-    this.vpnActive = false
+    this.lifecycle.move(VpnPhase.Stopping);
     this.stopKernelWatchdog()
     await this.noticeController.stop()
     try {
@@ -350,6 +363,7 @@ export class FlClashVpnService extends CommonVpnService {
       stopListener()
       this.isStopped = true
     }
+    this.lifecycle.move(VpnPhase.Stopped);
     return true
   }
 
@@ -444,13 +458,15 @@ export class FlClashVpnService extends CommonVpnService {
     if (!this.desiredRunning) return false
     const generation = this.intentGeneration
     if (this.healFailures >= FlClashVpnService.MAX_HEAL_FAILURES) {
-      this.desiredRunning = false
       await this.stopVpnInternal()
-      if (generation === this.intentGeneration) await publishReconnectNotice(this.context)
+      if (generation === this.intentGeneration) {
+        this.lifecycle.move(VpnPhase.Failed, '自动恢复失败，请手动重连');
+        await publishReconnectNotice(this.context);
+      }
       return false
     }
     ++this.healFailures
-    this.vpnActive = false
+    this.lifecycle.move(VpnPhase.Recovering);
     await this.noticeController.stop()
     await this.releaseTun()
     if (!this.desiredRunning || generation !== this.intentGeneration) return false

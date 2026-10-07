@@ -28,4 +28,5 @@ revision="$(git -C core rev-parse --short=12 HEAD)"
 mkdir -p "../../libs/$outdir"
 # Failed builds never copy a stale library.
 cp "$work/libflclash.so" "../../libs/$outdir/libflclash.so"
+node ../../../scripts/native-provenance.cjs --write "$outdir" "$GO_BIN"
 echo "Built ../../libs/$outdir/libflclash.so (core $revision)"

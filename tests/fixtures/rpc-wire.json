@@ -295,7 +295,7 @@
       "errorCode": "UNKNOWN_METHOD"
     },
     {
-      "name": "unimplemented tunnel",
+      "name": "state query on wrong endpoint",
       "wire": "{\"protocolVersion\": 1, \"method\": 1, \"params\": []}",
       "endpoint": "go",
       "errorCode": "UNSUPPORTED_METHOD"
@@ -371,6 +371,18 @@
       "wire": "{\"protocolVersion\":1,\"method\":33,\"params\":null}",
       "endpoint": "go",
       "errorCode": "INVALID_PARAMS"
+    },
+    {
+      "name": "VPN state query",
+      "wire": "{\"protocolVersion\":1,\"method\":1,\"params\":[]}",
+      "endpoint": "vpn",
+      "errorCode": ""
+    },
+    {
+      "name": "activation snapshot path",
+      "wire": "{\"protocolVersion\": 1, \"method\": 12, \"params\": [\"{\\\"profile-id\\\": \\\"A/config\\\", \\\"config\\\": {}, \\\"params\\\": {}, \\\"source-path\\\": \\\"/tmp/activation.yaml\\\"}\"]}",
+      "endpoint": "go",
+      "errorCode": ""
     }
   ],
   "results": [
@@ -751,6 +763,27 @@
       "result": "{}",
       "valid": false,
       "streamReady": true
+    },
+    {
+      "name": "state snapshot 54",
+      "method": 1,
+      "result": "{\"phase\": \"running\", \"running\": true, \"desiredRunning\": true, \"startedAt\": 100, \"generation\": 1, \"error\": \"\"}",
+      "valid": true,
+      "streamReady": false
+    },
+    {
+      "name": "state snapshot 55",
+      "method": 1,
+      "result": "{\"phase\": \"bogus\", \"running\": false, \"desiredRunning\": false, \"startedAt\": 0, \"generation\": 0, \"error\": \"\"}",
+      "valid": false,
+      "streamReady": false
+    },
+    {
+      "name": "state snapshot 56",
+      "method": 1,
+      "result": "{\"phase\": \"stopped\"}",
+      "valid": false,
+      "streamReady": false
     }
   ]
 }

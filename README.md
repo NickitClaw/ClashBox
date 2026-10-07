@@ -62,6 +62,13 @@ devecocli build --modules entry --build-mode debug
 `ProfileStorage.transaction` 回调中的 `ProfileTransaction` 只在当前事务内有效，不能嵌套获取同一配置的锁。
 内核校验和最终替换使用同一个唯一临时文件，校验失败、取消或写入失败时不会先截断现有配置。
 
+配置切换统一调用 `ClashViewModel.activateProfile(id, update)`，配置页和收藏入口不再直接改写当前选择。
+`ConfigActivationService` 串行执行更新、读取快照、内核加载和选择提交；过期操作不能发布选择，普通重载在队列中读取最新选择。
+加载失败或加载过程中被新请求取代时，用上一次确认的 YAML 与设置快照恢复；恢复失败会尝试停止 VPN 并报告错误。
+内核解析失败保留原运行配置，缺失/损坏文件不会再回退并应用默认配置。
+大 YAML 经独立临时文件传给内核，请求完成后清理，不占用 RPC 帧空间；设置 patch 保留已生效的节点/规则快照。
+后台订阅更新只更新磁盘内容，切换或完整重载后才会生效。
+
 IPC 请求和响应统一使用「4 字节大端 UTF-8 字节数 + JSON」帧，单帧上限 4 MiB；日志连接支持连续多帧。
 因此 ArkTS 客户端、扩展进程和 `libflclash.so` 必须一起更新。NAPI `startTun` 返回 `Promise<boolean>`，
 `stopTun` 返回 `Promise<void>`，完成/失败均由原生层确认。不要替换回旧 `.so` 后仅测试前端构建。
@@ -70,7 +77,11 @@ RPC 定义集中在 `protocol/rpc.schema.json`：方法编号、端点、参数�
 修改后执行 `node scripts/generate-rpc.cjs`，提交清单和生成的 ArkTS/Go 文件；
 `node scripts/generate-rpc.cjs --check` 可检查生成文件是否过期，原生构建和回归测试会执行此检查。
 保留已有编号（0–33），新增方法使用新编号；移除的方法保留编号并设置 `supported: false`，禁止复用。
-`queryTunnelState` 和 `registerOnMessage` 尚未实现，调用会明确返回 `UNSUPPORTED_METHOD`。
+`registerOnMessage` 尚未实现，调用会明确返回 `UNSUPPORTED_METHOD`。
+`queryTunnelState`（1）由 VPN 端点返回状态快照：阶段、确认的运行标志、运行意图、启动时间、意图序号和错误。
+阶段为 `stopped / starting / running / stopping / recovering / failed / unknown`，扩展进程的串行操作队列维护此状态。
+UI 前台每两秒同步一次；失败查询保留上次确认的运行标志，同时显示 `unknown`，不发送“已停止”事件。
+页面与卡片消费状态投影，扩展进程在后台直接更新卡片并管理常驻通知；停止/状态查询不依赖 Go 握手成功。
 
 请求包含 `protocolVersion`、`method` 和 `params` 数组；成功响应包含同版本、同方法和 `result`，
 失败响应包含 `errorCode`、`error` 且不包含 `result`。保留现有业务数据的 JSON 字符串编码，
@@ -82,14 +93,33 @@ RPC 定义集中在 `protocol/rpc.schema.json`：方法编号、端点、参数�
 连接故障或内核切换后重新握手。修改帧格式/响应封装时递增 `protocolVersion`；
 修改 NAPI 签名或完成语义时递增 `nativeAbiVersion`。清单变化会自动更新摘要，需同步重建并提交 `.so`。
 
-回归测试执行实际仓库代码，使用受控的系统 API 替身覆盖异步竞态：
+回归测试执行实际仓库代码，使用受控的系统 API 替身覆盖异步竞态。轻量检查只需 Node.js 与官方 Go，无需 DevEco/设备：
 
 ```sh
-# ohpm 依赖与 DevEco Studio 已安装；非默认安装位置可设 CLASHBOX_TYPESCRIPT
-node --test tests/regression.cjs
+npm ci --ignore-scripts --no-audit --no-fund
+npm run check
+# go 未加入 PATH 时：GO_BIN=/path/to/go npm run check
+# 单独执行 ArkTS 逻辑回归：npm test
+# 使用 DevEco 转译器核对时：CLASHBOX_TYPESCRIPT=/path/to/typescript.js npm test
 
 # Go 帧协议和契约测试，无第三方依赖；支持官方 Go（从仓库根目录执行）
 GO111MODULE=off go test -race -v ./proxy_core/src/flclash/rpcframe ./proxy_core/src/flclash/rpccontract
 ```
+
+`.github/workflows/checks.yml` 在 main 推送和 PR 上执行同一套检查。测试工具版本由 `package-lock.json` 固定，
+GitHub Actions 按提交 SHA 固定。轻量 CI 检查生成文件、原生源码/二进制摘要、回归测试和 Go 竞态测试。
+编译器语义检查仍以完整 ArkTS 构建为准，Node 转译测试不能替代它。
+
+在已安装 API 26、OpenHarmony Go 和 `devecocli` 的开发机上，初始化子模块并执行 `ohpm install --all` 后：
+
+```sh
+# 将 DevEco Node/Java/ohpm/devecocli 加入当前 shell 的 PATH；可指定 OHOS_GO、OHOS_NATIVE_HOME、GO_BIN。
+bash scripts/build-hap.sh
+```
+
+脚本重新编译 arm64 内核、运行检查、清理并构建未签名 HAP，最后核对打包库的 ELF 可加载内容。
+`proxy_core/libs/arm64-v8a/libflclash.build.json` 随库提交，记录原生源码摘要、子模块版本、编译器、SDK 和库摘要；
+修改原生源码/协议后若未重建，CI 会失败。HAP 旁的 `entry-default-unsigned.build.json` 额外记录应用提交、工作区状态和包摘要。
+完整 HAP 构建在开发机执行；GitHub 托管任务不安装 DevEco SDK，也不配置签名或发布安装包。
 
 设备验证还应覆盖：后台锁屏后代理流量、通知开关、连续启停、扩展进程被回收后重连，以及自动更新与手动编辑同时发生。

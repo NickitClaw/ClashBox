@@ -15,7 +15,6 @@ import { systemShare } from '@kit.ShareKit';
 import { uniformTypeDescriptor as utd } from '@kit.ArkData';
 import { UrlUtils } from '../common/utils/UrlUtils';
 import { BundleInfo, PROXY_STARTED_DURATION_INIT_VALUE } from '../common/entity/Constants'
-import { commonEventManager } from '@kit.BasicServicesKit';
 import { Timer } from '../common/utils/HHmmssTimer';
 import { number2Time } from '../common/utils/TimeConvertUtil';
 import { customVibrator } from '../common/utils/VibratorUtil';
@@ -56,17 +55,13 @@ export default class EntryAbility extends UIAbility {
   private bundleInfo: BundleInfo = new BundleInfo()
   /** @description 卡片延迟定时器 */
   private cardDelayTimer: number = -1
-  private subscriber: commonEventManager.CommonEventSubscriber | null = null;
   private windowLimits: window.WindowLimits = {
     minWidth: 1345,
     minHeight: 498,
     maxWidth: 5200,
     maxHeight: 1080
   }
-  private subscribeInfo: commonEventManager.CommonEventSubscribeInfo = {
-    events: ["VpnServiceTimeEvent"]
-  };
-  private proxyStartedTimer = new Timer()
+
   private avoidManager: Xb_AvoidanceManager | undefined = undefined;
   private avoidListener: (avoidance: SmartAvoidance) => void = (newAvoidance) => {
     AppStorage.setOrCreate('bottomRectHeight', newAvoidance.bottom);
@@ -126,44 +121,6 @@ export default class EntryAbility extends UIAbility {
     // 从want中获取传入的链接信息
     this.getSharedConfigUrl(want)
 
-    // 订阅ClashVpnAbility中的事件 -> 将运行时间同步显示在 卡片
-    commonEventManager.createSubscriber(this.subscribeInfo,
-      (err: BusinessError, commonEventSubscriber: commonEventManager.CommonEventSubscriber) => {
-        if (!err) {
-          console.info(`Succeeded in creating subscriber.`);
-          this.subscriber = commonEventSubscriber;
-          try {
-            commonEventManager.subscribe(this.subscriber,
-              (err: BusinessError, data: commonEventManager.CommonEventData) => {
-                if (err) {
-                  console.error(`Failed to subscribe. Code is ${err.code}, message is ${err.message}`);
-                } else {
-                  console.info(`Succeeded in subscribing, data is ` + JSON.stringify(data));
-                  if (data.code === 0) {
-                    // 计算时间
-                    const vpnServiceStartTime = Number(data.data)
-                    // 启动前先初始化卡片显示文本
-                    cardManager.pushCartVpnServiceTime(PROXY_STARTED_DURATION_INIT_VALUE)
-                    this.proxyStartedTimer.start((time) => {
-                      EventHub.sendEvent(EventKey.ProxyDuration, time)
-                      cardManager.pushCartVpnServiceTime(number2Time(time))
-                    }, vpnServiceStartTime)
-
-                    EventHub.on(EventKey.StopedClashEntry, () => {
-                      hilog.info(0x001, "EntryAbility", "StopedClashEntry")
-                      this.proxyStartedTimer.reset()
-                    })
-                  }
-                }
-              });
-          } catch (error) {
-            let err: BusinessError = error as BusinessError;
-            console.error(`Failed to subscribe. Code is ${err.code}, message is ${err.message}`);
-          }
-        } else {
-          console.error(`Failed to create subscriber. Code is ${err.code}, message is ${err.message}`);
-        }
-      });
 
   }
 
@@ -340,6 +297,7 @@ export default class EntryAbility extends UIAbility {
   }
 
   onWindowStageDestroy(): void {
+    ClashViewModel.stopStateMonitoring();
     // Main window is destroyed, release UI related resources
     hilog.info(0x0000, 'EntryAbility', '%{public}s', 'Ability onWindowStageDestroy');
   }
@@ -348,7 +306,7 @@ export default class EntryAbility extends UIAbility {
     // Ability has brought to foreground
     AppStorage.setOrCreate('ForwardState', true)
     if (this.clashCoreInitialized) {
-      ClashViewModel.refreshVpnState().catch((e: Error) => { console.warn('VPN 状态同步失败', e.message) })
+      ClashViewModel.startStateMonitoring()
     }
     hilog.info(0x0000, 'EntryAbility', '%{public}s', 'Ability onForeground');
 
@@ -370,6 +328,7 @@ export default class EntryAbility extends UIAbility {
   }
 
   onBackground(): void {
+    ClashViewModel.stopStateMonitoring();
     // Ability has back to background
     AppStorage.setOrCreate('ForwardState', false)
     hilog.info(0x0000, 'EntryAbility', '%{public}s', 'Ability onBackground');
@@ -450,7 +409,10 @@ export default class EntryAbility extends UIAbility {
         const obj = JSON.parse(indata.readString()) as object
         const proxyActionType = obj['proxyActionType'] as ProxyActionType
 
-        this.CardClashCoreEvent(proxyActionType)
+        this.CardClashCoreEvent(proxyActionType).catch((e: Error) => {
+          cardManager.pushCartLoading(false);
+          hilog.error(0x0000, 'EntryAbility', `卡片操作失败: ${e.message}`);
+        })
 
         return null
       })
@@ -485,13 +447,15 @@ export default class EntryAbility extends UIAbility {
     const clashCore = (AppStorage.get<AppConfig>("appConfig") || cardManager.getAppConfig())?.clashCore
     await ClashViewModel.ChangeCore(clashCore);
     if (clashCore != ClashCore.mihomo) {
-      let service = new SocketStubService(this.context);
+      let service = new SocketStubService(this.context, (state) => { cardManager.pushCartVpnState(state); });
       await service.startService(Date.now());
     }
     await ClashViewModel.socketProxy.ensureCompatibility();
     await ClashViewModel.initProfile();
     EventHub.on(EventKey.LoadClashConfig, (isPatch: boolean) => {
-      ClashViewModel.loadConfig(isPatch, 'ClashCoreInit-EventKey.LoadClashConfig');
+      ClashViewModel.loadConfig(isPatch, 'ClashCoreInit-EventKey.LoadClashConfig').catch((e: Error) => {
+        this.uiContext?.getPromptAction().showToast({ message: e.message, duration: 3000 });
+      });
     });
     // 内核失联自愈已迁移到 VPN 扩展进程内（FlClashVpnService 看门狗）：
     // UI 进程退后台会被挂起，每秒轮询自愈既不可靠也无意义；
@@ -500,6 +464,7 @@ export default class EntryAbility extends UIAbility {
     hilog.info(0x0000, 'EntryAbility', 'Succeeded in loading the content.');
 
     this.clashCoreInitialized = true
+    if (AppStorage.get<boolean>('ForwardState') !== false) ClashViewModel.startStateMonitoring();
 
     // 启动配置自动更新服务
     await this.startConfigAutoUpdateService();

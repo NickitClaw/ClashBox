@@ -1,3 +1,5 @@
+import { VpnPhase, VpnSnapshot } from 'proxy_core/src/main/ets/rpc/RpcContract.generated';
+import { initialVpnState, vpnStateLabel } from 'proxy_core/src/main/ets/rpc/VpnLifecycleState';
 // 主页 栅格布局、二维断点
 import { curves } from '@kit.ArkUI'
 import SwitchMode from '../components/Home/SwitchMode'
@@ -72,6 +74,7 @@ struct Home {
   // 是否为PX外屏
   @Consume isPXSecScreen: boolean
   // 代理启动按钮状态
+  @StorageProp('vpnState') vpnState: VpnSnapshot = initialVpnState(VpnPhase.Unknown);
   @Consume proxyEnabled: boolean
   @Consume isHomePage: boolean
   @Consume isRolling: boolean
@@ -273,7 +276,7 @@ struct Home {
             Icon1: $r('sys.symbol.pause'),
             Icon2: $r('sys.symbol.play_fill'),
             Switch: this.proxyEnabled,
-            SubText: this.proxyStartingDuration
+            SubText: this.vpnState.phase === VpnPhase.Running ? this.proxyStartingDuration : vpnStateLabel(this.vpnState.phase)
           })
             .onClick(async () => {
               // 触发代理启动事件
@@ -438,7 +441,7 @@ struct Home {
     })
     // 注册代理启动事件
     EventHub.on(EventKey.ChangeProxy, () => {
-      this.switchProxyMode()
+      this.switchProxyMode().catch((e: Error) => { Xb_ToastUtil.showToast({ message: e.message }); })
     })
     // 只有当PC首次启动时重置主页布局
     if (this.is2in1 && this.uiConfig.isShowHomeCard === JSON.stringify(showHomeCard)) {
@@ -465,9 +468,9 @@ struct Home {
       // vpn小钥匙可能卡死，关闭vpn小钥匙
       await ClashViewModel.StopVpn()
     } else {
-      this.proxyEnabled = !this.proxyEnabled
+      const shouldStart = !ClashViewModel.vpnRequested
       hilog.info(0xA002, this.componentName, `主页按钮点击后 代理启动按钮状态：${this.proxyEnabled}`)
-      if (this.proxyEnabled) {
+      if (shouldStart) {
         await ClashViewModel.StartVpn()
       } else {
         console.log(`Home Clash已经停止`)

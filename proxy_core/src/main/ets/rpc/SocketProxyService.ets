@@ -1,7 +1,8 @@
 import { encodeRpcFrame, RpcFrameBuffer } from './RpcFrame';
+import { generateUUID, writeProfileText } from '../profile/ProfileStorage';
 import { socket, vpnExtension } from '@kit.NetworkKit';
 import { createRpcRequest, decodeRpcResponse, rpcMethod, assertRpcCompatibility, RpcError } from './RpcContract';
-import { RpcCapabilities, RpcErrorCode } from './RpcContract.generated';
+import { RpcCapabilities, RpcErrorCode, VpnSnapshot } from './RpcContract.generated';
 import { JSON, util } from '@kit.ArkTS';
 import { common } from '@kit.AbilityKit';
 import { ClashRpcType, IClashManager, VpnRawOptions, HealthCheckBatchParams } from './IClashManager';
@@ -9,7 +10,7 @@ import { ConnectionInfo, IpInfo, LogInfo, Provider, ProxyGroup, ProxyMode,
   Traffic } from '../models/Common';
 import  fs from  "@ohos.file.fs"
 import { fileIo, fileUri } from "@kit.CoreFileKit";
-import { UpdateConfigParams } from '../models/ClashConfig';
+import { UpdateConfigParams, ClashConfig, ConfigExtendedParams } from '../models/ClashConfig';
 import { checkIp, queryCurrentIpInfo, flushHttpConnections } from '../Request';
 import { Fd, ParseProxyGroup, VpnOptions } from './FlClashVpnService';
 import { Address, isIpv4, isIpv6, VpnConfig } from './CommonVpnService';
@@ -25,6 +26,13 @@ interface Snapshot{
 interface TrafficInfo{
   up: number
   down: number
+}
+
+interface ConfigLoadRequest {
+  'profile-id': string;
+  'source-path'?: string;
+  config: ClashConfig;
+  params: ConfigExtendedParams;
 }
 
 
@@ -85,9 +93,20 @@ export class SocketProxyService implements IClashManager {
     return this.callbackRequest(ClashRpcType.registerOnMessage, [], observer)
   }
   async loadConfig(config: UpdateConfigParams): Promise<string> {
-    config['profile-id'] = config['profile-id'] + "/config"
-    let result = await this.sendMessageRequest(ClashRpcType.load, [JSON.stringify(config)])
-    return result as string
+    // Keep large YAML outside the bounded RPC frame. The private file contains the
+    // exact in-memory snapshot; rollback never rereads a changed subscription.
+    const path = config.source !== undefined ? `${this.context?.tempDir}/activation-${generateUUID()}.yaml` : undefined;
+    const request: ConfigLoadRequest = { 'profile-id': config['profile-id'] + '/config',
+      'source-path': path, config: config.config, params: config.params };
+    try {
+      if (path !== undefined) {
+        if (!this.context) throw new Error('配置存储尚未初始化');
+        await writeProfileText(path, config.source!);
+      }
+      return await this.sendMessageRequest(ClashRpcType.load, [JSON.stringify(request)]) as string;
+    } finally {
+      if (path !== undefined) { try { await fileIo.unlink(path); } catch (_) {} }
+    }
   }
   async vailConfig(filepath: string){
     let result = await this.sendMessageRequest(ClashRpcType.validConfig, [filepath])
@@ -281,6 +300,10 @@ export class SocketProxyService implements IClashManager {
     return map
   }
 
+  async queryVpnState(): Promise<VpnSnapshot> {
+    return JSON.parse(await this.sendMessageRequest(ClashRpcType.queryTunnelState) as string) as VpnSnapshot;
+  }
+
   async startClash():Promise<boolean>{
     let json = await this.sendMessageRequest(ClashRpcType.startClash, [])
     return json as boolean
@@ -329,7 +352,7 @@ export class SocketProxyService implements IClashManager {
     const request = createRpcRequest(method, params);
     const spec = rpcMethod(method);
     if (spec.stream) throw new RpcError(RpcErrorCode.INVALID_REQUEST, '订阅方法必须使用 callbackRequest', method);
-    if (method !== ClashRpcType.GetCapabilities) await this.ensureCompatibility();
+    if (spec.endpoint === 'go' && method !== ClashRpcType.GetCapabilities) await this.ensureCompatibility();
     return new Promise((resolve, reject) => {
       const client = socket.constructLocalSocketInstance();
       const frames = new RpcFrameBuffer();
@@ -344,7 +367,7 @@ export class SocketProxyService implements IClashManager {
         settled = true;
         cleanup();
         const err = typeof error === 'string' ? new Error(error) : error;
-        this.notifyConnectionRefused(err);
+        if (method !== ClashRpcType.queryTunnelState) this.notifyConnectionRefused(err);
         reject(err);
       };
       const succeed = (value: string | number | boolean | undefined) => {
@@ -362,7 +385,7 @@ export class SocketProxyService implements IClashManager {
       });
       client.on('close', () => { fail('连接已关闭，未收到完整响应'); });
       client.on('error', (e: Error) => { fail(e); });
-      timeoutId = setTimeout(() => { fail('RPC 请求超时'); }, method === ClashRpcType.GetCapabilities ? 3000 : 60000);
+      timeoutId = setTimeout(() => { fail('RPC 请求超时'); }, (method === ClashRpcType.GetCapabilities || method === ClashRpcType.queryTunnelState) ? 3000 : 60000);
       const connect = async (): Promise<void> => {
         let path = this.context?.filesDir + '/clash_go.sock';
         if (spec.endpoint === 'vpn') {

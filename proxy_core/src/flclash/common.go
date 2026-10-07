@@ -69,17 +69,20 @@ func getProfileProvidersPath(id string) string {
 	return filepath.Join(constant.Path.HomeDir(), "providers", id)
 }
 
-func getRawConfigWithId(id string) *config.RawConfig {
-	path := getProfilePath(id)
-	bytes, err := readFile(path)
+func getRawConfigWithId(id string, source *string) (*config.RawConfig, error) {
+	var bytes []byte
+	var err error
+	if source != nil {
+		bytes, err = readFile(*source)
+	} else {
+		bytes, err = readFile(getProfilePath(id))
+	}
 	if err != nil {
-		log.Errorln("profile is not exist")
-		return config.DefaultRawConfig()
+		return nil, fmt.Errorf("read profile: %w", err)
 	}
 	prof, err := config.UnmarshalRawConfig(bytes)
 	if err != nil {
-		log.Errorln("unmarshalRawConfig error %v", err)
-		return config.DefaultRawConfig()
+		return nil, fmt.Errorf("parse profile: %w", err)
 	}
 	for _, mapping := range prof.ProxyProvider {
 		value, exist := mapping["path"].(string)
@@ -105,7 +108,7 @@ func getRawConfigWithId(id string) *config.RawConfig {
 		}
 		mapping["path"] = filepath.Join(getProfileProvidersPath(id), value)
 	}
-	return prof
+	return prof, nil
 }
 
 func getExternalProvidersRaw() map[string]cp.Provider {
@@ -172,10 +175,13 @@ func sideUpdateExternalProvider(p cp.Provider, bytes []byte) error {
 	}
 }
 
-func decorationConfig(profileId string, cfg config.RawConfig) *config.RawConfig {
-	prof := getRawConfigWithId(profileId)
+func decorationConfig(profileId string, source *string, cfg config.RawConfig) (*config.RawConfig, error) {
+	prof, err := getRawConfigWithId(profileId, source)
+	if err != nil {
+		return nil, err
+	}
 	overwriteConfig(prof, cfg)
-	return prof
+	return prof, nil
 }
 
 func genHosts(hosts, patchHosts map[string]any) {
@@ -254,9 +260,6 @@ func overwriteConfig(targetConfig *config.RawConfig, patchConfig config.RawConfi
 	// ★ Tunnel 流量转发: 从 UI 配置透传到内核(与 mihomo tunnels 段字段一致)
 	targetConfig.Tunnels = patchConfig.Tunnels
 
-	if configParams.TestURL != nil {
-		constant.DefaultTestURL = *configParams.TestURL
-	}
 	for idx := range targetConfig.ProxyGroup {
 		targetConfig.ProxyGroup[idx]["url"] = ""
 	}
@@ -359,13 +362,15 @@ func patchSelectGroup() {
 	}
 }
 
+// Caller holds runLock from preparation through publication. Parse failures never replace the live configuration.
 func applyConfig(rawConfig *config.RawConfig) error {
-	runLock.Lock()
-	defer runLock.Unlock()
-	var err error
-	currentConfig, err = config.ParseRawConfig(rawConfig)
+	next, err := config.ParseRawConfig(rawConfig)
 	if err != nil {
-		currentConfig, _ = config.ParseRawConfig(config.DefaultRawConfig())
+		return err
+	}
+	currentConfig = next
+	if configParams.TestURL != nil {
+		constant.DefaultTestURL = *configParams.TestURL
 	}
 	if configParams.IsPatch {
 		patchConfig()

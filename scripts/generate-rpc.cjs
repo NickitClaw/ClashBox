@@ -37,6 +37,10 @@ ${methods.map(m => `  ${m.arkName} = ${m.id},`).join('\n')}
 export enum RpcErrorCode {
 ${schema.errors.map(e => `  ${e} = '${e}',`).join('\n')}
 }
+export enum VpnPhase {
+${schema.vpnPhases.map(phase => `  ${phase[0].toUpperCase() + phase.slice(1)} = '${phase}',`).join('\n')}
+}
+export interface VpnSnapshot { phase: VpnPhase; running: boolean; desiredRunning: boolean; startedAt: number; generation: number; error: string; }
 export type RpcValue = string | number | boolean;
 export interface RpcRequest { protocolVersion: number; method: number; params: RpcValue[]; }
 export interface RpcResult { protocolVersion: number; method: number; result?: RpcValue; error?: string; errorCode?: RpcErrorCode; streamReady?: boolean; }

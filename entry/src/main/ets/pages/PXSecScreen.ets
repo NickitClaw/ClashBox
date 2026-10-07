@@ -214,8 +214,8 @@ export struct PXSecScreen{
                     await ClashViewModel.StopVpn()
                   } else {
                     hilog.info(0xFF00, 'StartProxy', `#WindowChange#Timer PX外屏点击事件`)
-                    this.proxyEnabled = !this.proxyEnabled
-                    if (this.proxyEnabled) {
+                    const shouldStart = !ClashViewModel.vpnRequested
+                    if (shouldStart) {
                       await ClashViewModel.StartVpn()
                     } else {
                       await ClashViewModel.StopVpn()

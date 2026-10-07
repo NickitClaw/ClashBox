@@ -1,5 +1,6 @@
 import { socket } from '@kit.NetworkKit';
 import { common } from '@kit.AbilityKit';
+import { VpnSnapshot } from './RpcContract.generated';
 import { CommonVpnService } from './CommonVpnService';
 import { FlClashVpnService } from './FlClashVpnService';
 import { startIpc } from 'libflclash.so';
@@ -13,9 +14,9 @@ export class SocketStubService {
   clientPool: Map<number, socket.LocalSocketConnection>
   vpnService: CommonVpnService
   private initialized: Promise<void>
-  constructor( context: common.Context) {
+  constructor(context: common.Context, observer?: (state: VpnSnapshot) => void) {
     this.clientPool = new Map()
-    this.vpnService = new FlClashVpnService(context)
+    this.vpnService = new FlClashVpnService(context, observer)
     this.initialized = this.vpnService.init()
   }
 

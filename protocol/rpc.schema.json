@@ -5,7 +5,8 @@
     "length-prefixed-rpc",
     "validated-rpc",
     "confirmed-tun-lifecycle",
-    "stream-ready-ack"
+    "stream-ready-ack",
+    "vpn-state-snapshot"
   ],
   "errors": [
     "INVALID_REQUEST",
@@ -60,10 +61,62 @@
       "goName": "QueryTunnelState",
       "params": [],
       "result": {
-        "type": "string"
+        "type": "json",
+        "content": {
+          "type": "object",
+          "fields": [
+            {
+              "name": "phase",
+              "shape": {
+                "type": "string",
+                "enum": [
+                  "stopped",
+                  "starting",
+                  "running",
+                  "stopping",
+                  "recovering",
+                  "failed",
+                  "unknown"
+                ]
+              }
+            },
+            {
+              "name": "running",
+              "shape": {
+                "type": "boolean"
+              }
+            },
+            {
+              "name": "desiredRunning",
+              "shape": {
+                "type": "boolean"
+              }
+            },
+            {
+              "name": "startedAt",
+              "shape": {
+                "type": "integer",
+                "min": 0
+              }
+            },
+            {
+              "name": "generation",
+              "shape": {
+                "type": "integer",
+                "min": 0
+              }
+            },
+            {
+              "name": "error",
+              "shape": {
+                "type": "string"
+              }
+            }
+          ]
+        }
       },
-      "endpoint": "go",
-      "supported": false,
+      "endpoint": "vpn",
+      "supported": true,
       "stream": false
     },
     {
@@ -370,6 +423,14 @@
                   "name": "params",
                   "shape": {
                     "type": "object"
+                  }
+                },
+                {
+                  "name": "source-path",
+                  "optional": true,
+                  "shape": {
+                    "type": "string",
+                    "minLength": 1
                   }
                 }
               ]
@@ -976,5 +1037,14 @@
       "supported": true,
       "stream": false
     }
+  ],
+  "vpnPhases": [
+    "stopped",
+    "starting",
+    "running",
+    "stopping",
+    "recovering",
+    "failed",
+    "unknown"
   ]
 }

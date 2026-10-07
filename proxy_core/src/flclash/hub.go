@@ -95,6 +95,15 @@ func handleValidateConfig(bytes []byte) string {
 }
 
 func handleUpdateConfig(bytes []byte) string {
+	runLock.Lock()
+	defer runLock.Unlock()
+	previousParams := configParams
+	committed := false
+	defer func() {
+		if !committed {
+			configParams = previousParams
+		}
+	}()
 	var params = &GenerateConfigParams{}
 	err := json.Unmarshal(bytes, params)
 	if err != nil {
@@ -102,7 +111,10 @@ func handleUpdateConfig(bytes []byte) string {
 	}
 
 	configParams = params.Params
-	prof := decorationConfig(params.ProfileId, params.Config)
+	prof, err := decorationConfig(params.ProfileId, params.SourcePath, params.Config)
+	if err != nil {
+		return err.Error()
+	}
 	// Translate the legacy wrapper option into Mihomo's system DNS source.
 	var legacy struct {
 		Config struct {
@@ -123,6 +135,7 @@ func handleUpdateConfig(bytes []byte) string {
 	if err != nil {
 		return err.Error()
 	}
+	committed = true
 	return ""
 }
 

@@ -2,6 +2,7 @@ import { LogLevel, ProxyMode } from "./Common"
 
 export interface  UpdateConfigParams{
   "profile-id": string
+  source?: string
   config: ClashConfig
   params: ConfigExtendedParams
 }

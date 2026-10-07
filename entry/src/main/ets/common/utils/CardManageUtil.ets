@@ -1,3 +1,5 @@
+import { VpnPhase, VpnSnapshot } from 'proxy_core/src/main/ets/rpc/RpcContract.generated';
+import { vpnStateLabel } from 'proxy_core/src/main/ets/rpc/VpnLifecycleState';
 import { Context } from '@kit.AbilityKit'
 import { preferences } from '@kit.ArkData'
 import { formBindingData, formProvider } from '@kit.FormKit';
@@ -67,6 +69,18 @@ class CardManager {
         this.store.flushSync()
       }
     }
+  }
+
+  pushCartVpnState(state: VpnSnapshot, refresh: boolean = false): void {
+    if (refresh && this.ctx) {
+      const options: preferences.Options = { name: this.storeName };
+      preferences.removePreferencesFromCacheSync(this.ctx, options);
+      this.store = preferences.getPreferencesSync(this.ctx, options);
+    }
+    const loading = state.phase === VpnPhase.Starting || state.phase === VpnPhase.Stopping || state.phase === VpnPhase.Recovering;
+    const data = formBindingData.createFormBindingData({ proxyEnabled: state.running, loading: loading,
+      tips: state.phase === VpnPhase.Running || state.phase === VpnPhase.Stopped ? '' : vpnStateLabel(state.phase) });
+    this.getCardIdList().forEach(formId => { formProvider.updateForm(formId, data).catch(() => {}); });
   }
 
   /** @description 推送代理状态到所有卡片 */

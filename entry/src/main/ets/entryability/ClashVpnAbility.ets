@@ -1,6 +1,7 @@
 import {  VpnExtensionAbility } from '@kit.NetworkKit';
 import { Want } from '@kit.AbilityKit';
 import { SocketStubService } from 'proxy_core';
+import { cardManager } from '../common/utils/CardManageUtil';
 import { ClashCore } from './AppState';
 import fs from  "@ohos.file.fs"
 import { writeFile } from 'proxy_core/src/main/ets/fileUtils';
@@ -19,7 +20,8 @@ export default class ClashVpnAbility extends VpnExtensionAbility {
       let requestId = want.parameters?.["requestId"] as number
       if(core == ClashCore.mihomo){
         console.log("ClashBox", `启用核心 mihomo`);
-        this.clashStubService = new SocketStubService(this.context)
+        cardManager.init(this.context);
+        this.clashStubService = new SocketStubService(this.context, (state) => { cardManager.pushCartVpnState(state, true); })
         await this.clashStubService.startService(requestId)
         console.log("ClashBox", `启用核心 mihomo 成功`);
       }else{
@@ -43,7 +45,6 @@ export default class ClashVpnAbility extends VpnExtensionAbility {
   }
 
 };
-
 
 
 
