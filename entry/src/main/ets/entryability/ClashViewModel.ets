@@ -26,6 +26,11 @@ import { number2Time } from "../common/utils/TimeConvertUtil";
 import { picker } from "@kit.CoreFileKit"
 import { Xb_GetResourceString, Xb_ToastUtil } from "xb_components";
 import { accessControlRdb } from "../common/datasources/AccessControlRdb";
+import { syncVpnNoticePrefs } from "../common/utils/VpnNoticeConfigSync";
+import { deviceInfo } from "@kit.BasicServicesKit";
+
+/** VPN 授权结果监听（vpnExtension.createVpnObserver）自 API 26.0.0 起可用 */
+const VPN_OBSERVER_MIN_API = 26
 
 export interface DelayInfo{
     name: string
@@ -46,6 +51,56 @@ export class ClashViewModel {
     await this.profileRepo.init(context)
     this.socketProxy.init(context)
     await this.initGeoIp()
+    this.registerVpnAuthObserver()
+  }
+
+  /** VPN 授权结果监听器（API 26+） */
+  private vpnObserver: vpnExtension.VpnObserver | null = null
+
+  /**
+   * 注册 VPN 授权结果监听（API 26 起）：用户首次启动 VPN 的系统授权弹窗结果回调，
+   * 拒绝时 Toast 明确提示。多次 on 仅最后 callback 生效，故每进程只注册一次；
+   * 低版本系统（compatibleSdkVersion 17）无此 API，直接走原路径不崩溃。
+   */
+  registerVpnAuthObserver(): void {
+    if (this.vpnObserver) {
+      return
+    }
+    if (deviceInfo.sdkApiVersion < VPN_OBSERVER_MIN_API ||
+      !canIUse('SystemCapability.Communication.NetManager.Vpn')) {
+      hilog.info(0x0000, 'ClashViewModel', `当前系统 API ${deviceInfo.sdkApiVersion} 不支持 VpnObserver，跳过注册`)
+      return
+    }
+    try {
+      this.vpnObserver = vpnExtension.createVpnObserver()
+      this.vpnObserver.onAuthorizationResult((granted: boolean) => {
+        hilog.info(0x0000, 'ClashViewModel', `VPN 授权结果: ${granted}`)
+        if (!granted) {
+          // 用户拒绝授权：内核不可能启动成功，明确提示
+          Xb_ToastUtil.showToast({
+            message: Xb_GetResourceString($r('app.string.vpn_auth_denied'), this.context),
+            duration: 3000
+          })
+        }
+      })
+      hilog.info(0x0000, 'ClashViewModel', 'VPN 授权结果监听已注册')
+    } catch (e) {
+      hilog.error(0x0000, 'ClashViewModel', `VPN 授权结果监听注册失败: ${(e as Error).message}`)
+      this.vpnObserver = null
+    }
+  }
+
+  /** 取消 VPN 授权结果监听（UIAbility 销毁时调用） */
+  releaseVpnAuthObserver(): void {
+    if (!this.vpnObserver) {
+      return
+    }
+    try {
+      this.vpnObserver.offAuthorizationResult()
+    } catch (e) {
+      hilog.error(0x0000, 'ClashViewModel', `VPN 授权结果监听取消失败: ${(e as Error).message}`)
+    }
+    this.vpnObserver = null
   }
   // 添加配置 url
   async addOrUpdateProfileByUrl(data: ConfigData, id: string | null) {
@@ -204,6 +259,10 @@ export class ClashViewModel {
       profile.proxySelected?.set(g, p)
       await this.profileRepo.addOrUpdate(profile)
       await this.socketProxy.changeProxy(g, p)
+      // 同步新节点名到共享 preferences，供 VPN 扩展进程刷新常驻通知标题
+      if (this.context) {
+        syncVpnNoticePrefs(this.context, p)
+      }
       EventHub.sendEvent(EventKey.checkIpInfo)
     } catch (e) {
       ClashViewModel.promptAction.showToast({message: e.message, duration:3000})
@@ -422,6 +481,10 @@ export class ClashViewModel {
   // loadConfig
   async StartVpn(){
     this.vpnStarted = true
+    // 同步常驻通知配置到共享 preferences，VPN 扩展进程在内核启动成功后将据此发布通知
+    if (this.context) {
+      await syncVpnNoticePrefs(this.context)
+    }
     await this.loadVpnOptions()
     let result = await this.socketProxy.startClash()
     // 核心崩溃 小钥匙一直在，要重启两量变

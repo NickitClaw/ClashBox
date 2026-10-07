@@ -2439,6 +2439,14 @@
     {
       "name": "access_control_limit_msg_black",
       "value": "The blacklist is full, and it supports up to 64 applications"
+    },
+    {
+      "name": "vpn_reconnect_notice_text",
+      "value": "VPN disconnected. Tap to reconnect."
+    },
+    {
+      "name": "vpn_auth_denied",
+      "value": "VPN authorization denied. Cannot start the proxy."
     }
   ]
 }

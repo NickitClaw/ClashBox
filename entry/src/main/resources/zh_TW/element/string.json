@@ -2439,6 +2439,14 @@
     {
       "name": "access_control_limit_msg",
       "value": "名額不足，僅添加 %d 個，略過 %s 個"
+    },
+    {
+      "name": "vpn_reconnect_notice_text",
+      "value": "VPN 已斷開，點擊重連"
+    },
+    {
+      "name": "vpn_auth_denied",
+      "value": "VPN 授權被拒絕，無法啟動代理"
     }
   ]
 }

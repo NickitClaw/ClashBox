@@ -34,7 +34,8 @@
         "name": "default",
         "signingConfig": "debug",
         "compatibleSdkVersion": "5.0.5(17)",
-        "targetSdkVersion": "6.0.0(20)",
+        // API 26 起版本号格式变更：直接写 API 级别（hvigor 校验规则，7.0.0(26) 格式会被拒绝）
+        "targetSdkVersion": "26.0.0",
         "runtimeOS": "HarmonyOS",
         "buildOption": {
           "strictMode": {
@@ -53,7 +54,8 @@
         "name": "release",
         "signingConfig": "release",
         "compatibleSdkVersion": "5.0.5(17)",
-        "targetSdkVersion": "6.0.0(20)",
+        // API 26 起版本号格式变更：直接写 API 级别（hvigor 校验规则，7.0.0(26) 格式会被拒绝）
+        "targetSdkVersion": "26.0.0",
         "runtimeOS": "HarmonyOS",
         "buildOption": {
           "strictMode": {
