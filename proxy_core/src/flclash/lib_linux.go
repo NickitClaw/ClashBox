@@ -152,7 +152,7 @@ func GetRunTime() string {
 	tunLock.Lock()
 	defer tunLock.Unlock()
 	if runTime == nil {
-		return "clash服务未启动"
+		return "0"
 	}
 	return strconv.FormatInt(runTime.UnixMilli(), 10)
 }

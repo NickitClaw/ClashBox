@@ -27,7 +27,9 @@ import {
 import { Address, AddressWithPrefix, CommonVpnService, cidrToRoute, VpnConfig } from './CommonVpnService';
 import { JSON, util } from '@kit.ArkTS';
 import { fileIo } from '@kit.CoreFileKit';
-import { RpcRequest } from './RpcRequest';
+import { decodeRpcRequest, decodeRpcResponse, createRpcRequest, rpcSuccess, rpcFailure, RpcError } from './RpcContract';
+import { RpcErrorCode } from './RpcContract.generated';
+import { assertNativeCompatibility } from './NativeCompatibility';
 import { ClashRpcType } from './IClashManager';
 import { ConnectionInfo, LogInfo, Proxy, Provider, ProxyGroup, ProxyMode, ProxyType, Traffic } from '../models/Common';
 import { getHome, getProfilePath } from '../appPath';
@@ -81,12 +83,14 @@ export class FlClashVpnService extends CommonVpnService {
         this.frames.set(client.clientId, buffer)
       }
       for (const frame of buffer.push(new Uint8Array(message.message))) {
-        const request = JSON.parse(frame) as RpcRequest
+        let method = -1;
         try {
-          const result = await this.onRemoteMessage(request.method, request.params)
-          await this.sendClient(client, JSON.stringify({ result: result }))
+          const request = decodeRpcRequest(frame, 'vpn');
+          method = request.method;
+          const result = await this.onRemoteMessage(request.method, request.params);
+          await this.sendClient(client, JSON.stringify(rpcSuccess(method, result)));
         } catch (e) {
-          await this.sendClient(client, JSON.stringify({ error: (e as Error).message || 'VPN 操作失败' }))
+          await this.sendClient(client, JSON.stringify(rpcFailure(e as Error, method)));
         }
       }
     } catch (_) {
@@ -146,7 +150,7 @@ export class FlClashVpnService extends CommonVpnService {
           break;
         }
         default: {
-          resolve("不支持当前操作")
+          reject(new RpcError(RpcErrorCode.UNSUPPORTED_METHOD, '当前端点不支持此操作', code))
         }
       }
     })
@@ -408,7 +412,7 @@ export class FlClashVpnService extends CommonVpnService {
       client.on('message', (value: socket.LocalSocketMessageInfo) => {
         try {
           for (const frame of frames.push(new Uint8Array(value.message))) {
-            const response = JSON.parse(frame) as Record<string, string>
+            const response = decodeRpcResponse(frame, requireTun ? ClashRpcType.GetVpnRunTime : ClashRpcType.GetVersion)
             done(!response.error && (!requireTun || Number(response.result) > 0))
           }
         } catch (_) { done(false) }
@@ -421,7 +425,7 @@ export class FlClashVpnService extends CommonVpnService {
       })
       client.connect({ address: { address: socketPath }, timeout: 1000 })
         .then(() => {
-          return client.send({ data: encodeRpcFrame(JSON.stringify({ method: requireTun ? ClashRpcType.GetVpnRunTime : ClashRpcType.GetVersion, params: [] })) })
+          return client.send({ data: encodeRpcFrame(JSON.stringify(createRpcRequest(requireTun ? ClashRpcType.GetVpnRunTime : ClashRpcType.GetVersion, []))) })
         })
         .catch(() => {
           done(false)
@@ -466,6 +470,7 @@ export class FlClashVpnService extends CommonVpnService {
   }
 
   override async init() {
+    assertNativeCompatibility()
     initClash(await getHome(this.context), "1.0.0")
   }
 }

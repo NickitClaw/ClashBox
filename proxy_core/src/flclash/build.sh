@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")"
+node ../../../scripts/generate-rpc.cjs --check
 # Source: https://gitcode.com/openharmony-sig/ohos_golang_go
 GO_BIN="${OHOS_GO:-${HOME}/.local/share/harmonyos7/native-toolchain/go-ohos/bin/go}"
 OHOS_NATIVE_HOME="${OHOS_NATIVE_HOME:-/Applications/DevEco-Studio.app/Contents/sdk/default/openharmony/native}"

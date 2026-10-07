@@ -488,6 +488,7 @@ export default class EntryAbility extends UIAbility {
       let service = new SocketStubService(this.context);
       await service.startService(Date.now());
     }
+    await ClashViewModel.socketProxy.ensureCompatibility();
     await ClashViewModel.initProfile();
     EventHub.on(EventKey.LoadClashConfig, (isPatch: boolean) => {
       ClashViewModel.loadConfig(isPatch, 'ClashCoreInit-EventKey.LoadClashConfig');

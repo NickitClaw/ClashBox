@@ -1,0 +1,980 @@
+{
+  "protocolVersion": 1,
+  "nativeAbiVersion": 1,
+  "capabilities": [
+    "length-prefixed-rpc",
+    "validated-rpc",
+    "confirmed-tun-lifecycle",
+    "stream-ready-ack"
+  ],
+  "errors": [
+    "INVALID_REQUEST",
+    "UNKNOWN_METHOD",
+    "UNSUPPORTED_METHOD",
+    "INVALID_PARAMS",
+    "INVALID_RESPONSE",
+    "INCOMPATIBLE_VERSION",
+    "INTERNAL_ERROR"
+  ],
+  "methods": [
+    {
+      "id": 0,
+      "arkName": "queryTrafficNow",
+      "goName": "QueryTrafficNow",
+      "params": [
+        {
+          "name": "onlyProxy",
+          "shape": {
+            "type": "boolean"
+          },
+          "optional": true
+        }
+      ],
+      "result": {
+        "type": "json",
+        "content": {
+          "type": "object",
+          "fields": [
+            {
+              "name": "up",
+              "shape": {
+                "type": "number"
+              }
+            },
+            {
+              "name": "down",
+              "shape": {
+                "type": "number"
+              }
+            }
+          ]
+        }
+      },
+      "endpoint": "go",
+      "supported": true,
+      "stream": false
+    },
+    {
+      "id": 1,
+      "arkName": "queryTunnelState",
+      "goName": "QueryTunnelState",
+      "params": [],
+      "result": {
+        "type": "string"
+      },
+      "endpoint": "go",
+      "supported": false,
+      "stream": false
+    },
+    {
+      "id": 2,
+      "arkName": "queryTrafficTotal",
+      "goName": "QueryTrafficTotal",
+      "params": [
+        {
+          "name": "onlyProxy",
+          "shape": {
+            "type": "boolean"
+          },
+          "optional": true
+        }
+      ],
+      "result": {
+        "type": "json",
+        "content": {
+          "type": "object",
+          "fields": [
+            {
+              "name": "up",
+              "shape": {
+                "type": "number"
+              }
+            },
+            {
+              "name": "down",
+              "shape": {
+                "type": "number"
+              }
+            }
+          ]
+        }
+      },
+      "endpoint": "go",
+      "supported": true,
+      "stream": false
+    },
+    {
+      "id": 3,
+      "arkName": "queryProxyGroup",
+      "goName": "QueryProxyGroup",
+      "params": [
+        {
+          "name": "mode",
+          "shape": {
+            "type": "string",
+            "enum": [
+              "GLOBAL",
+              "RULE",
+              "DIRECT"
+            ]
+          },
+          "optional": true
+        }
+      ],
+      "result": {
+        "type": "json",
+        "content": {
+          "type": "object"
+        }
+      },
+      "endpoint": "go",
+      "supported": true,
+      "stream": false
+    },
+    {
+      "id": 4,
+      "arkName": "queryProviders",
+      "goName": "QueryProviders",
+      "params": [],
+      "result": {
+        "type": "json",
+        "content": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "fields": [
+              {
+                "name": "name",
+                "shape": {
+                  "type": "string"
+                }
+              },
+              {
+                "name": "type",
+                "shape": {
+                  "type": "string"
+                }
+              }
+            ]
+          }
+        }
+      },
+      "endpoint": "go",
+      "supported": true,
+      "stream": false
+    },
+    {
+      "id": 5,
+      "arkName": "changeProxy",
+      "goName": "ChangeProxy",
+      "params": [
+        {
+          "name": "group",
+          "shape": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        {
+          "name": "proxy",
+          "shape": {
+            "type": "string"
+          }
+        }
+      ],
+      "result": {
+        "type": "string"
+      },
+      "endpoint": "go",
+      "supported": true,
+      "stream": false
+    },
+    {
+      "id": 6,
+      "arkName": "healthCheck",
+      "goName": "HealthCheck",
+      "params": [
+        {
+          "name": "name",
+          "shape": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        {
+          "name": "timeout",
+          "shape": {
+            "type": "integer",
+            "min": 1,
+            "max": 60000
+          }
+        }
+      ],
+      "result": {
+        "type": "json",
+        "content": {
+          "type": "object",
+          "fields": [
+            {
+              "name": "name",
+              "shape": {
+                "type": "string"
+              }
+            },
+            {
+              "name": "value",
+              "shape": {
+                "type": "integer"
+              }
+            }
+          ]
+        }
+      },
+      "endpoint": "go",
+      "supported": true,
+      "stream": false
+    },
+    {
+      "id": 7,
+      "arkName": "updateProvider",
+      "goName": "UpdateProvider",
+      "params": [
+        {
+          "name": "name",
+          "shape": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      ],
+      "result": {
+        "type": "string"
+      },
+      "endpoint": "go",
+      "supported": true,
+      "stream": false
+    },
+    {
+      "id": 8,
+      "arkName": "uploadProvider",
+      "goName": "UploadProvider",
+      "params": [
+        {
+          "name": "name",
+          "shape": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        {
+          "name": "path",
+          "shape": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      ],
+      "result": {
+        "type": "string"
+      },
+      "endpoint": "go",
+      "supported": true,
+      "stream": false
+    },
+    {
+      "id": 9,
+      "arkName": "queryConnections",
+      "goName": "QueryConnections",
+      "params": [],
+      "result": {
+        "type": "json",
+        "content": {
+          "type": "object",
+          "fields": [
+            {
+              "name": "connections",
+              "shape": {
+                "type": "array",
+                "items": {
+                  "type": "object"
+                },
+                "nullable": true
+              },
+              "optional": true
+            }
+          ]
+        }
+      },
+      "endpoint": "go",
+      "supported": true,
+      "stream": false
+    },
+    {
+      "id": 10,
+      "arkName": "closeConnection",
+      "goName": "CloseConnection",
+      "params": [
+        {
+          "name": "id",
+          "shape": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      ],
+      "result": {
+        "type": "string"
+      },
+      "endpoint": "go",
+      "supported": true,
+      "stream": false
+    },
+    {
+      "id": 11,
+      "arkName": "clearConnections",
+      "goName": "ClearConnections",
+      "params": [],
+      "result": {
+        "type": "string"
+      },
+      "endpoint": "go",
+      "supported": true,
+      "stream": false
+    },
+    {
+      "id": 12,
+      "arkName": "load",
+      "goName": "Load",
+      "params": [
+        {
+          "name": "config",
+          "shape": {
+            "type": "json",
+            "content": {
+              "type": "object",
+              "fields": [
+                {
+                  "name": "profile-id",
+                  "shape": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                {
+                  "name": "config",
+                  "shape": {
+                    "type": "object"
+                  }
+                },
+                {
+                  "name": "params",
+                  "shape": {
+                    "type": "object"
+                  }
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "result": {
+        "type": "string"
+      },
+      "endpoint": "go",
+      "supported": true,
+      "stream": false
+    },
+    {
+      "id": 13,
+      "arkName": "startClash",
+      "goName": "StartClash",
+      "params": [],
+      "result": {
+        "type": "boolean"
+      },
+      "endpoint": "vpn",
+      "supported": true,
+      "stream": false
+    },
+    {
+      "id": 14,
+      "arkName": "stopClash",
+      "goName": "StopClash",
+      "params": [],
+      "result": {
+        "type": "boolean"
+      },
+      "endpoint": "vpn",
+      "supported": true,
+      "stream": false
+    },
+    {
+      "id": 15,
+      "arkName": "validConfig",
+      "goName": "ValidConfig",
+      "params": [
+        {
+          "name": "path",
+          "shape": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      ],
+      "result": {
+        "type": "string"
+      },
+      "endpoint": "go",
+      "supported": true,
+      "stream": false
+    },
+    {
+      "id": 16,
+      "arkName": "reset",
+      "goName": "Reset",
+      "params": [],
+      "result": {
+        "type": "string"
+      },
+      "endpoint": "go",
+      "supported": true,
+      "stream": false
+    },
+    {
+      "id": 17,
+      "arkName": "getCountryCode",
+      "goName": "GetCountryCode",
+      "params": [
+        {
+          "name": "ip",
+          "shape": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      ],
+      "result": {
+        "type": "string"
+      },
+      "endpoint": "go",
+      "supported": true,
+      "stream": false
+    },
+    {
+      "id": 18,
+      "arkName": "updateGeoData",
+      "goName": "UpdateGeoData",
+      "params": [
+        {
+          "name": "type",
+          "shape": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        {
+          "name": "name",
+          "shape": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      ],
+      "result": {
+        "type": "string"
+      },
+      "endpoint": "go",
+      "supported": true,
+      "stream": false
+    },
+    {
+      "id": 19,
+      "arkName": "registerOnMessage",
+      "goName": "RegisterOnMessage",
+      "params": [],
+      "result": {
+        "type": "string"
+      },
+      "endpoint": "go",
+      "supported": false,
+      "stream": true
+    },
+    {
+      "id": 20,
+      "arkName": "getRequestList",
+      "goName": "GetRequestList",
+      "params": [],
+      "result": {
+        "type": "json",
+        "content": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        }
+      },
+      "endpoint": "go",
+      "supported": true,
+      "stream": false
+    },
+    {
+      "id": 21,
+      "arkName": "clearRequestList",
+      "goName": "ClearRequestList",
+      "params": [],
+      "result": {
+        "type": "string"
+      },
+      "endpoint": "go",
+      "supported": true,
+      "stream": false
+    },
+    {
+      "id": 22,
+      "arkName": "setLogObserver",
+      "goName": "SetLogObserver",
+      "params": [],
+      "result": {
+        "type": "json",
+        "content": {
+          "type": "object",
+          "fields": [
+            {
+              "name": "logLevel",
+              "shape": {
+                "type": "string"
+              }
+            },
+            {
+              "name": "payload",
+              "shape": {
+                "type": "string"
+              }
+            },
+            {
+              "name": "time",
+              "shape": {
+                "type": "integer"
+              }
+            }
+          ]
+        }
+      },
+      "endpoint": "go",
+      "supported": true,
+      "stream": true
+    },
+    {
+      "id": 23,
+      "arkName": "stopLogObserver",
+      "goName": "StopLogObserver",
+      "params": [],
+      "result": {
+        "type": "string"
+      },
+      "endpoint": "go",
+      "supported": true,
+      "stream": false
+    },
+    {
+      "id": 24,
+      "arkName": "vpnOptions",
+      "goName": "VpnOptions",
+      "params": [],
+      "result": {
+        "type": "json",
+        "content": {
+          "type": "object",
+          "fields": [
+            {
+              "name": "enable",
+              "shape": {
+                "type": "boolean"
+              }
+            },
+            {
+              "name": "port",
+              "shape": {
+                "type": "integer"
+              }
+            },
+            {
+              "name": "ipv4Address",
+              "shape": {
+                "type": "string"
+              }
+            },
+            {
+              "name": "ipv6Address",
+              "shape": {
+                "type": "string"
+              }
+            }
+          ]
+        }
+      },
+      "endpoint": "go",
+      "supported": true,
+      "stream": false
+    },
+    {
+      "id": 25,
+      "arkName": "setOptionState",
+      "goName": "SetOptionState",
+      "params": [
+        {
+          "name": "options",
+          "shape": {
+            "type": "json",
+            "content": {
+              "type": "object",
+              "fields": [
+                {
+                  "name": "tunIp",
+                  "shape": {
+                    "type": "string"
+                  },
+                  "optional": true
+                },
+                {
+                  "name": "ipv6",
+                  "shape": {
+                    "type": "boolean"
+                  },
+                  "optional": true
+                },
+                {
+                  "name": "routeAddress",
+                  "shape": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "optional": true
+                },
+                {
+                  "name": "accessControl",
+                  "shape": {
+                    "type": "object",
+                    "fields": [
+                      {
+                        "name": "mode",
+                        "shape": {
+                          "type": "string"
+                        }
+                      },
+                      {
+                        "name": "acceptList",
+                        "shape": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        }
+                      },
+                      {
+                        "name": "rejectList",
+                        "shape": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                },
+                {
+                  "name": "mtu",
+                  "shape": {
+                    "type": "integer",
+                    "min": 576,
+                    "max": 65535
+                  },
+                  "optional": true
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "result": {
+        "type": "string"
+      },
+      "endpoint": "go",
+      "supported": true,
+      "stream": false
+    },
+    {
+      "id": 26,
+      "arkName": "GetVpnRunTime",
+      "goName": "GetVpnRunTime",
+      "params": [],
+      "result": {
+        "type": "decimalString"
+      },
+      "endpoint": "go",
+      "supported": true,
+      "stream": false
+    },
+    {
+      "id": 27,
+      "arkName": "VpnConfigInited",
+      "goName": "VpnConfigInited",
+      "params": [],
+      "result": {
+        "type": "string",
+        "enum": [
+          "true",
+          "false"
+        ]
+      },
+      "endpoint": "go",
+      "supported": true,
+      "stream": false
+    },
+    {
+      "id": 28,
+      "arkName": "SetNetInterfaces",
+      "goName": "SetNetInterfaces",
+      "params": [
+        {
+          "name": "interfaces",
+          "shape": {
+            "type": "json",
+            "content": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              }
+            }
+          }
+        }
+      ],
+      "result": {
+        "type": "string"
+      },
+      "endpoint": "go",
+      "supported": true,
+      "stream": false
+    },
+    {
+      "id": 29,
+      "arkName": "downloadConfig",
+      "goName": "DownloadConfig",
+      "params": [
+        {
+          "name": "url",
+          "shape": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        {
+          "name": "userAgent",
+          "shape": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "path",
+          "shape": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      ],
+      "result": {
+        "type": "json",
+        "content": {
+          "type": "object",
+          "fields": [
+            {
+              "name": "content-disposition",
+              "shape": {
+                "type": "string"
+              },
+              "optional": true
+            },
+            {
+              "name": "subscription-userinfo",
+              "shape": {
+                "type": "string"
+              },
+              "optional": true
+            }
+          ]
+        }
+      },
+      "endpoint": "go",
+      "supported": true,
+      "stream": false
+    },
+    {
+      "id": 30,
+      "arkName": "SetSystemDns",
+      "goName": "SetSystemDns",
+      "params": [
+        {
+          "name": "dns",
+          "shape": {
+            "type": "string"
+          }
+        }
+      ],
+      "result": {
+        "type": "string"
+      },
+      "endpoint": "go",
+      "supported": true,
+      "stream": false
+    },
+    {
+      "id": 31,
+      "arkName": "healthCheckAll",
+      "goName": "HealthCheckAll",
+      "params": [],
+      "result": {
+        "type": "string"
+      },
+      "endpoint": "go",
+      "supported": true,
+      "stream": false
+    },
+    {
+      "id": 32,
+      "arkName": "healthCheckBatch",
+      "goName": "HealthCheckBatch",
+      "params": [
+        {
+          "name": "batch",
+          "shape": {
+            "type": "json",
+            "content": {
+              "type": "object",
+              "fields": [
+                {
+                  "name": "proxy-names",
+                  "shape": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  }
+                },
+                {
+                  "name": "timeout",
+                  "shape": {
+                    "type": "integer",
+                    "min": 1,
+                    "max": 60000
+                  }
+                },
+                {
+                  "name": "test-url",
+                  "shape": {
+                    "type": "string"
+                  }
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "result": {
+        "type": "json",
+        "content": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "fields": [
+              {
+                "name": "name",
+                "shape": {
+                  "type": "string"
+                }
+              },
+              {
+                "name": "value",
+                "shape": {
+                  "type": "integer"
+                }
+              }
+            ]
+          }
+        }
+      },
+      "endpoint": "go",
+      "supported": true,
+      "stream": false
+    },
+    {
+      "id": 33,
+      "arkName": "GetVersion",
+      "goName": "GetVersion",
+      "params": [],
+      "result": {
+        "type": "string",
+        "minLength": 1
+      },
+      "endpoint": "go",
+      "supported": true,
+      "stream": false
+    },
+    {
+      "id": 34,
+      "arkName": "GetCapabilities",
+      "goName": "GetCapabilities",
+      "params": [],
+      "result": {
+        "type": "json",
+        "content": {
+          "type": "object",
+          "fields": [
+            {
+              "name": "protocolVersion",
+              "shape": {
+                "type": "integer"
+              }
+            },
+            {
+              "name": "nativeAbiVersion",
+              "shape": {
+                "type": "integer"
+              }
+            },
+            {
+              "name": "contractHash",
+              "shape": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            {
+              "name": "coreVersion",
+              "shape": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            {
+              "name": "capabilities",
+              "shape": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          ]
+        }
+      },
+      "endpoint": "go",
+      "supported": true,
+      "stream": false
+    }
+  ]
+}

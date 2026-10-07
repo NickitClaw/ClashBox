@@ -66,15 +66,30 @@ IPC 请求和响应统一使用「4 字节大端 UTF-8 字节数 + JSON」帧，
 因此 ArkTS 客户端、扩展进程和 `libflclash.so` 必须一起更新。NAPI `startTun` 返回 `Promise<boolean>`，
 `stopTun` 返回 `Promise<void>`，完成/失败均由原生层确认。不要替换回旧 `.so` 后仅测试前端构建。
 
+RPC 定义集中在 `protocol/rpc.schema.json`：方法编号、端点、参数和返回值类型、错误码与兼容性版本都从这里维护。
+修改后执行 `node scripts/generate-rpc.cjs`，提交清单和生成的 ArkTS/Go 文件；
+`node scripts/generate-rpc.cjs --check` 可检查生成文件是否过期，原生构建和回归测试会执行此检查。
+保留已有编号（0–33），新增方法使用新编号；移除的方法保留编号并设置 `supported: false`，禁止复用。
+`queryTunnelState` 和 `registerOnMessage` 尚未实现，调用会明确返回 `UNSUPPORTED_METHOD`。
+
+请求包含 `protocolVersion`、`method` 和 `params` 数组；成功响应包含同版本、同方法和 `result`，
+失败响应包含 `errorCode`、`error` 且不包含 `result`。保留现有业务数据的 JSON 字符串编码，
+两端都会检查嵌套 JSON 的必要字段；配置内容本身仍由内核校验。日志订阅先返回 `streamReady: true`，随后发送日志帧。
+新增方法除修改清单外，还需实现对应处理逻辑，并向 `tests/fixtures/rpc-wire.json` 添加独立的有效/无效样例。
+
+启动前检查 NAPI `getCompatibilityInfo()`，普通 RPC 和订阅前通过 `GetCapabilities`（34）确认远端兼容性。
+检查协议版本、原生接口版本、清单摘要和必需能力；任意不一致都会拒绝启动并提示安装同次构建的完整包。
+连接故障或内核切换后重新握手。修改帧格式/响应封装时递增 `protocolVersion`；
+修改 NAPI 签名或完成语义时递增 `nativeAbiVersion`。清单变化会自动更新摘要，需同步重建并提交 `.so`。
+
 回归测试执行实际仓库代码，使用受控的系统 API 替身覆盖异步竞态：
 
 ```sh
 # ohpm 依赖与 DevEco Studio 已安装；非默认安装位置可设 CLASHBOX_TYPESCRIPT
 node --test tests/regression.cjs
 
-# Go 帧协议测试，无第三方依赖；支持官方 Go
-cd proxy_core/src/flclash/rpcframe
-GO111MODULE=off go test -race -v
+# Go 帧协议和契约测试，无第三方依赖；支持官方 Go（从仓库根目录执行）
+GO111MODULE=off go test -race -v ./proxy_core/src/flclash/rpcframe ./proxy_core/src/flclash/rpccontract
 ```
 
 设备验证还应覆盖：后台锁屏后代理流量、通知开关、连续启停、扩展进程被回收后重连，以及自动更新与手动编辑同时发生。

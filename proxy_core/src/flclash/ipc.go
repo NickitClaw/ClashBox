@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"core/rpccontract"
 	"core/rpcframe"
 	"core/state"
 	"encoding/base64"
@@ -67,28 +68,46 @@ func handleConnection(conn net.Conn) {
 	if err != nil {
 		return
 	}
-	request := RpcRequest{}
-	if err := json.Unmarshal(payload, &request); err != nil {
+	request, fault := rpccontract.DecodeRequest(payload, "go")
+	if fault != nil {
+		data, _ := json.Marshal(rpccontract.Failure(request.Method, fault))
+		_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+		_ = rpcframe.Write(conn, data)
 		return
 	}
 	_ = conn.SetReadDeadline(time.Time{})
 	session := rpcframe.NewSession(conn)
 	defer session.Close()
-	streaming := request.Method == SetLogObserver || request.Method == RegisterOnMessage
+	spec, _ := rpccontract.Lookup(request.Method)
+	streaming := spec.Stream
 	reply := func(result RpcResult) {
+		result.ProtocolVersion = rpccontract.ProtocolVersion
+		if result.Error != "" {
+			result.Result = nil
+			if result.ErrorCode == "" {
+				result.ErrorCode = rpccontract.INTERNAL_ERROR
+			}
+		} else if fault := rpccontract.ValidateResult(request.Method, result.Result, result.StreamReady); fault != nil {
+			result = rpccontract.Failure(request.Method, fault)
+		}
 		data, err := json.Marshal(result)
 		if err != nil {
 			session.Finish()
 			return
 		}
-		_ = session.Send(data, !streaming)
+		_ = session.Send(data, !streaming || result.Error != "")
 	}
 	session.WatchDisconnect()
 	if request.Method == SetLogObserver {
+		ready := make(chan struct{})
 		unsubscribe := subscribeLog(func(value string) {
+			// Register before acknowledging, but never send data ahead of the ack.
+			<-ready
 			reply(RpcResult{Key: request.Key, Method: request.Method, Result: value})
 		})
 		defer unsubscribe()
+		reply(RpcResult{Method: request.Method, Result: "", StreamReady: true})
+		close(ready)
 	} else {
 		go func() {
 			defer func() {
@@ -112,61 +131,11 @@ func handleConnection(conn net.Conn) {
 	}
 }
 
-type RpcRequest struct {
-	Key    int          `json:"key"`
-	Method ClashRpcType `json:"method"`
-	Params []any        `json:"params"`
-}
-type RpcResult struct {
-	Key    int          `json:"key"`
-	Method ClashRpcType `json:"method"`
-	Result string       `json:"result"`
-	Error  string       `json:"error"`
-}
-type ClashRpcType int
-
-// 定义常量来模拟枚举
-const (
-	QueryTrafficNow ClashRpcType = iota
-	QueryTunnelState
-	QueryTrafficTotal
-	QueryProxyGroup
-	QueryProviders
-	ChangeProxy
-	HealthCheck
-	UpdateProvider
-	UploadProvider
-	QueryConnections
-	CloseConnection
-	ClearConnections
-	Load
-	StartClash
-	StopClash
-	ValidConfig
-	Reset
-	GetCountryCode
-	UpdateGeoData
-	RegisterOnMessage
-	GetRequestList
-	ClearRequestList
-	SetLogObserver
-	StopLogObserver
-	VpnOptions
-	SetOptionState
-	GetVpnRunTime
-	VpnConfigInited
-	SetNetInterfaces
-	DownloadConfig
-	SetSystemDns
-	HealthCheckAll
-	HealthCheckBatch
-	GetVersion
-)
-
 func handleRemoteRequest(request RpcRequest, fn func(RpcResult)) {
 	ret := RpcResult{
 		Key:    request.Key,
 		Method: request.Method,
+		Result: "",
 	}
 	switch request.Method {
 	case QueryTrafficNow:
@@ -359,6 +328,9 @@ func handleRemoteRequest(request RpcRequest, fn func(RpcResult)) {
 			ret.Result = value
 			fn(ret)
 		})
+	case GetCapabilities:
+		ret.Result = rpccontract.CompatibilityJSON(constant.Version)
+		fn(ret)
 	case GetVersion:
 		ver := constant.Version
 		if ver == "" {
@@ -368,6 +340,7 @@ func handleRemoteRequest(request RpcRequest, fn func(RpcResult)) {
 		fn(ret)
 	default:
 		ret.Error = "未知请求"
+		ret.ErrorCode = rpccontract.UNKNOWN_METHOD
 		fn(ret)
 	}
 

@@ -1,6 +1,7 @@
 import { encodeRpcFrame, RpcFrameBuffer } from './RpcFrame';
 import { socket, vpnExtension } from '@kit.NetworkKit';
-import {  RpcResult } from './RpcRequest';
+import { createRpcRequest, decodeRpcResponse, rpcMethod, assertRpcCompatibility, RpcError } from './RpcContract';
+import { RpcCapabilities, RpcErrorCode } from './RpcContract.generated';
 import { JSON, util } from '@kit.ArkTS';
 import { common } from '@kit.AbilityKit';
 import { ClashRpcType, IClashManager, VpnRawOptions, HealthCheckBatchParams } from './IClashManager';
@@ -30,6 +31,7 @@ interface TrafficInfo{
 
 @ObservedV2
 export class SocketProxyService implements IClashManager {
+  private compatibility: Promise<RpcCapabilities> | undefined
   context?: common.Context
   active: boolean = false
   @Trace offlineTime: number[] = []
@@ -42,10 +44,30 @@ export class SocketProxyService implements IClashManager {
 
   init(context: common.Context) {
     this.context = context
+    this.resetCompatibility()
+  }
+
+  resetCompatibility(): void { this.compatibility = undefined; }
+
+  async ensureCompatibility(): Promise<RpcCapabilities> {
+    if (!this.compatibility) {
+      this.compatibility = this.sendMessageRequest(ClashRpcType.GetCapabilities, []).then((value) => {
+        return assertRpcCompatibility(value as string);
+      }).catch((e: Error) => {
+        this.compatibility = undefined;
+        if (e instanceof RpcError) {
+          throw new RpcError(RpcErrorCode.INCOMPATIBLE_VERSION, '内核协议不兼容，请安装同一次构建的完整应用包');
+        }
+        throw e;
+      });
+    }
+    return this.compatibility;
   }
 
   /** 检测 connection refused 类错误并触发全局自愈回调 */
   private notifyConnectionRefused(e: Error): void {
+    if (e instanceof RpcError) return
+    this.resetCompatibility()
     const msg = e?.message ?? String(e)
     if (msg.includes('Connection refused') || msg.includes('VPN服务未启动')) {
       this.onConnectionRefused?.()
@@ -110,8 +132,7 @@ export class SocketProxyService implements IClashManager {
 
   /**
    * 轻量探测 Go IPC socket 是否可连接(只 connect, 不发任何 RPC)。
-   * 用于冷启动等待核心就绪: 部分核心不支持 GetVersion RPC,
-   * 用 getVersion() 探测会在 socket 就绪后仍持续失败, 导致等待超时。
+   * 仅用于等待监听器就绪；兼容性由 ensureCompatibility 握手单独确认。
    * @returns true=可连接; 文件不存在/连接失败均返回 false
    */
   async isSocketReady(): Promise<boolean> {
@@ -200,9 +221,8 @@ export class SocketProxyService implements IClashManager {
     return result as string;
   }
   async clearConnections(): Promise<ConnectionInfo[]> {
-    let result = await this.sendMessageRequest(ClashRpcType.clearConnections)
-    const json = JSON.parse(result as string) as ConnectionInfo[]
-    return json;
+    await this.sendMessageRequest(ClashRpcType.clearConnections)
+    return [];
   }
 
   async queryProxyGroups(model: ProxyMode): Promise<ProxyGroup[]> {
@@ -268,7 +288,7 @@ export class SocketProxyService implements IClashManager {
   // TODO 返回运行时间,卡片和ui统一使用 需要测试,
   async getRuntime(): Promise<number> {
     let result = await this.sendMessageRequest(ClashRpcType.GetVpnRunTime)
-    return result as number
+    return Number(result)
   }
   // TODO startClash前需要调用判断, clash配置是否加载完成,
   // 没有加载,做友好提示,或则先加载clash配置,在启动
@@ -299,29 +319,17 @@ export class SocketProxyService implements IClashManager {
     return json as boolean
   }
   async reset():Promise<boolean>{
-    let json = await this.sendMessageRequest(ClashRpcType.reset, [])
-    return json as boolean
-  }
-  async ParseMessage(messageBuffer: string, resolve: (s: string| number | boolean | undefined)=>void, reject:  (err: string)=>void){
-    try {
-      let json = JSON.parse(messageBuffer) as RpcResult
-      if (!json.error || json.error == "")
-        resolve(json.result)
-      else{
-        console.warn(`ParseMessage error: error=${json.error}`)
-        reject(json.error)
-      }
-    } catch (e) {
-      console.error("ParseMessage: invalid RPC response")
-      reject("JSON解码失败: " + JSON.stringify(e))
-    }
+    await this.sendMessageRequest(ClashRpcType.reset, [])
+    return true
   }
   async sendMessageRequest(
     method: number,
     params: (string| number | boolean) [] = []
   ): Promise<string| number | boolean | undefined>{
-    console.log("sendMessageRequest " + method)
-
+    const request = createRpcRequest(method, params);
+    const spec = rpcMethod(method);
+    if (spec.stream) throw new RpcError(RpcErrorCode.INVALID_REQUEST, '订阅方法必须使用 callbackRequest', method);
+    if (method !== ClashRpcType.GetCapabilities) await this.ensureCompatibility();
     return new Promise((resolve, reject) => {
       const client = socket.constructLocalSocketInstance();
       const frames = new RpcFrameBuffer();
@@ -335,7 +343,7 @@ export class SocketProxyService implements IClashManager {
         if (settled) return;
         settled = true;
         cleanup();
-        const err = error instanceof Error ? error : new Error(error);
+        const err = typeof error === 'string' ? new Error(error) : error;
         this.notifyConnectionRefused(err);
         reject(err);
       };
@@ -347,17 +355,17 @@ export class SocketProxyService implements IClashManager {
       client.on('message', (value: socket.LocalSocketMessageInfo) => {
         try {
           for (const frame of frames.push(new Uint8Array(value.message))) {
-            this.ParseMessage(frame, succeed, fail);
+            succeed(decodeRpcResponse(frame, method).result);
             break;
           }
         } catch (e) { fail(e as Error); }
       });
       client.on('close', () => { fail('连接已关闭，未收到完整响应'); });
       client.on('error', (e: Error) => { fail(e); });
-      timeoutId = setTimeout(() => { fail('RPC 请求超时'); }, 60000);
+      timeoutId = setTimeout(() => { fail('RPC 请求超时'); }, method === ClashRpcType.GetCapabilities ? 3000 : 60000);
       const connect = async (): Promise<void> => {
         let path = this.context?.filesDir + '/clash_go.sock';
-        if (method === ClashRpcType.startClash || method === ClashRpcType.stopClash) {
+        if (spec.endpoint === 'vpn') {
           path = this.context?.filesDir + '/ClashBox.sock';
         }
         if (!await fileIo.access(path)) throw new Error('VPN服务未启动');
@@ -365,7 +373,7 @@ export class SocketProxyService implements IClashManager {
         await tryConnect(client, path, 3, 500);
         if (settled) { client.close().catch(() => {}); return; }
         this.active = true;
-        await client.send({ data: encodeRpcFrame(JSON.stringify({ method, params })) });
+        await client.send({ data: encodeRpcFrame(JSON.stringify(request)) });
       };
       connect().catch((e: Error) => { this.active = false; fail(e); });
     });
@@ -376,37 +384,58 @@ export class SocketProxyService implements IClashManager {
     params: (string | number | boolean)[] = [],
     callBack: (message: string) => void
   ): Promise<() => void> {
-    const client = socket.constructLocalSocketInstance();
-    const frames = new RpcFrameBuffer();
-    let closed = false;
-    const cleanup = () => {
-      if (closed) return;
-      closed = true;
-      closeRpcSocket(client);
-    };
-    client.on('message', (value: socket.LocalSocketMessageInfo) => {
-      try {
-        for (const frame of frames.push(new Uint8Array(value.message))) {
-          const response = JSON.parse(frame) as RpcResult;
-          if (response.error) throw new Error(response.error);
-          callBack(response.result as string);
-        }
-      } catch (_) { cleanup(); }
+    const request = createRpcRequest(method, params, 'go');
+    if (!rpcMethod(method).stream) throw new RpcError(RpcErrorCode.INVALID_REQUEST, '此方法不是订阅接口', method);
+    await this.ensureCompatibility();
+    return new Promise<() => void>((resolve, reject) => {
+      const client = socket.constructLocalSocketInstance();
+      const frames = new RpcFrameBuffer();
+      let closed = false;
+      let ready = false;
+      let timer = -1;
+      const cleanup = (): void => {
+        if (closed) return;
+        closed = true;
+        clearTimeout(timer);
+        closeRpcSocket(client);
+      };
+      const fail = (error: Error): void => {
+        if (closed) return;
+        cleanup();
+        this.notifyConnectionRefused(error);
+        if (!ready) reject(error);
+        else console.warn(`RPC 订阅 ${method} 已终止: ${error.message}`);
+      };
+      client.on('message', (value: socket.LocalSocketMessageInfo) => {
+        try {
+          for (const frame of frames.push(new Uint8Array(value.message))) {
+            if (closed) break;
+            const response = decodeRpcResponse(frame, method);
+            if (!ready) {
+              if (!response.streamReady) throw new RpcError(RpcErrorCode.INVALID_RESPONSE, '缺少订阅确认', method);
+              ready = true;
+              clearTimeout(timer);
+              resolve(cleanup);
+            } else {
+              if (response.streamReady) throw new RpcError(RpcErrorCode.INVALID_RESPONSE, '重复订阅确认', method);
+              callBack(response.result as string);
+            }
+          }
+        } catch (e) { fail(e as Error); }
+      });
+      client.on('close', () => fail(new Error('RPC 订阅连接已关闭')));
+      client.on('error', fail);
+      timer = setTimeout(() => fail(new Error('RPC 订阅确认超时')), 5000);
+      const connect = async (): Promise<void> => {
+        const path = this.context?.filesDir + '/clash_go.sock';
+        if (!await fileIo.access(path)) throw new Error('VPN服务未启动');
+        if (closed) return;
+        await tryConnect(client, path, 3, 500);
+        if (closed) { client.close().catch(() => {}); return; }
+        await client.send({ data: encodeRpcFrame(JSON.stringify(request)) });
+      };
+      connect().catch(fail);
     });
-    client.on('close', cleanup);
-    client.on('error', (e: Error) => { cleanup(); this.notifyConnectionRefused(e); });
-    try {
-      const path = this.context?.filesDir + '/clash_go.sock';
-      if (!await fileIo.access(path)) throw new Error('VPN服务未启动');
-      await tryConnect(client, path, 3, 500);
-      if (closed) throw new Error('RPC 连接已关闭');
-      await client.send({ data: encodeRpcFrame(JSON.stringify({ method, params })) });
-      return cleanup;
-    } catch (e) {
-      cleanup();
-      this.notifyConnectionRefused(e as Error);
-      throw e as Error;
-    }
   }
 
 }

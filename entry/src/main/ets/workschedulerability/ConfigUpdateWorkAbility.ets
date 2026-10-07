@@ -1,3 +1,5 @@
+import { assertNativeCompatibility } from 'proxy_core/src/main/ets/rpc/NativeCompatibility';
+import { RpcError } from 'proxy_core/src/main/ets/rpc/RpcContract';
 import { WorkSchedulerExtensionAbility, workScheduler } from '@kit.BackgroundTasksKit';
 import { notificationManager } from '@kit.NotificationKit';
 import { wantAgent, WantAgent } from '@kit.AbilityKit';
@@ -26,8 +28,10 @@ class LocalValidateSocketProxy extends SocketProxyService {
     try {
       return await super.vailConfig(filepath)
     } catch (e) {
+      if (e instanceof RpcError) throw e;
       hilog.warn(0xFF00, TAG, `内核 RPC 校验不可达(${(e as Error).message})，回退到本进程内核校验`)
       if (!this.localCoreInited) {
+        assertNativeCompatibility()
         initClash(await getHome(this.context), '1.0.0')
         this.localCoreInited = true
       }

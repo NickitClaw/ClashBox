@@ -5,42 +5,7 @@ import {
   ProxyMode,
   ProxySort, SubscriptionInfo} from "../models/Common";
 
-export enum ClashRpcType{
-  queryTrafficNow,
-  queryTunnelState,
-  queryTrafficTotal,
-  queryProxyGroup,
-  queryProviders,
-  changeProxy,
-  healthCheck,
-  updateProvider,
-  uploadProvider,
-  queryConnections,
-  closeConnection,
-  clearConnections,
-  load,
-  startClash,
-  stopClash,
-  validConfig,
-  reset,
-  getCountryCode,
-  updateGeoData,
-  registerOnMessage,
-  getRequestList,
-  clearRequestList,
-  setLogObserver,
-  stopLogObserver,
-  vpnOptions,
-  setOptionState,
-  GetVpnRunTime,
-  VpnConfigInited,
-  SetNetInterfaces,
-  downloadConfig,
-  SetSystemDns,
-  healthCheckAll,
-  healthCheckBatch,
-  GetVersion
-}
+export { ClashRpcType } from './RpcContract.generated';
 
 export interface AccessControl{
   mode: string // AcceptSelected or other

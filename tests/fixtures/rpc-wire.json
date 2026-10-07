@@ -1,0 +1,756 @@
+{
+  "requests": [
+    {
+      "name": "traffic default",
+      "wire": "{\"protocolVersion\": 1, \"method\": 0, \"params\": []}",
+      "endpoint": "go",
+      "errorCode": ""
+    },
+    {
+      "name": "traffic filtered",
+      "wire": "{\"protocolVersion\": 1, \"method\": 2, \"params\": [true]}",
+      "endpoint": "go",
+      "errorCode": ""
+    },
+    {
+      "name": "proxy groups",
+      "wire": "{\"protocolVersion\": 1, \"method\": 3, \"params\": [\"RULE\"]}",
+      "endpoint": "go",
+      "errorCode": ""
+    },
+    {
+      "name": "providers",
+      "wire": "{\"protocolVersion\": 1, \"method\": 4, \"params\": []}",
+      "endpoint": "go",
+      "errorCode": ""
+    },
+    {
+      "name": "clear proxy choice",
+      "wire": "{\"protocolVersion\": 1, \"method\": 5, \"params\": [\"group\", \"\"]}",
+      "endpoint": "go",
+      "errorCode": ""
+    },
+    {
+      "name": "health check",
+      "wire": "{\"protocolVersion\": 1, \"method\": 6, \"params\": [\"节点\", 3000]}",
+      "endpoint": "go",
+      "errorCode": ""
+    },
+    {
+      "name": "update provider",
+      "wire": "{\"protocolVersion\": 1, \"method\": 7, \"params\": [\"provider\"]}",
+      "endpoint": "go",
+      "errorCode": ""
+    },
+    {
+      "name": "upload provider",
+      "wire": "{\"protocolVersion\": 1, \"method\": 8, \"params\": [\"provider\", \"/tmp/provider\"]}",
+      "endpoint": "go",
+      "errorCode": ""
+    },
+    {
+      "name": "connections",
+      "wire": "{\"protocolVersion\": 1, \"method\": 9, \"params\": []}",
+      "endpoint": "go",
+      "errorCode": ""
+    },
+    {
+      "name": "close connection",
+      "wire": "{\"protocolVersion\": 1, \"method\": 10, \"params\": [\"id\"]}",
+      "endpoint": "go",
+      "errorCode": ""
+    },
+    {
+      "name": "close all",
+      "wire": "{\"protocolVersion\": 1, \"method\": 11, \"params\": []}",
+      "endpoint": "go",
+      "errorCode": ""
+    },
+    {
+      "name": "load config",
+      "wire": "{\"protocolVersion\": 1, \"method\": 12, \"params\": [\"{\\\"profile-id\\\": \\\"123/config\\\", \\\"config\\\": {}, \\\"params\\\": {}}\"]}",
+      "endpoint": "go",
+      "errorCode": ""
+    },
+    {
+      "name": "validate config",
+      "wire": "{\"protocolVersion\": 1, \"method\": 15, \"params\": [\"/tmp/config\"]}",
+      "endpoint": "go",
+      "errorCode": ""
+    },
+    {
+      "name": "reset",
+      "wire": "{\"protocolVersion\": 1, \"method\": 16, \"params\": []}",
+      "endpoint": "go",
+      "errorCode": ""
+    },
+    {
+      "name": "country",
+      "wire": "{\"protocolVersion\": 1, \"method\": 17, \"params\": [\"::1\"]}",
+      "endpoint": "go",
+      "errorCode": ""
+    },
+    {
+      "name": "geo data",
+      "wire": "{\"protocolVersion\": 1, \"method\": 18, \"params\": [\"GeoIP\", \"GeoIP.dat\"]}",
+      "endpoint": "go",
+      "errorCode": ""
+    },
+    {
+      "name": "requests",
+      "wire": "{\"protocolVersion\": 1, \"method\": 20, \"params\": []}",
+      "endpoint": "go",
+      "errorCode": ""
+    },
+    {
+      "name": "clear requests",
+      "wire": "{\"protocolVersion\": 1, \"method\": 21, \"params\": []}",
+      "endpoint": "go",
+      "errorCode": ""
+    },
+    {
+      "name": "subscribe logs",
+      "wire": "{\"protocolVersion\": 1, \"method\": 22, \"params\": []}",
+      "endpoint": "go",
+      "errorCode": ""
+    },
+    {
+      "name": "stop logs",
+      "wire": "{\"protocolVersion\": 1, \"method\": 23, \"params\": []}",
+      "endpoint": "go",
+      "errorCode": ""
+    },
+    {
+      "name": "vpn options",
+      "wire": "{\"protocolVersion\": 1, \"method\": 24, \"params\": []}",
+      "endpoint": "go",
+      "errorCode": ""
+    },
+    {
+      "name": "set options",
+      "wire": "{\"protocolVersion\": 1, \"method\": 25, \"params\": [\"{\\\"tunIp\\\": \\\"172.19.0.1/30\\\", \\\"ipv6\\\": false, \\\"routeAddress\\\": [], \\\"mtu\\\": 1400, \\\"accessControl\\\": {\\\"mode\\\": \\\"AcceptSelected\\\", \\\"acceptList\\\": [], \\\"rejectList\\\": []}}\"]}",
+      "endpoint": "go",
+      "errorCode": ""
+    },
+    {
+      "name": "runtime",
+      "wire": "{\"protocolVersion\": 1, \"method\": 26, \"params\": []}",
+      "endpoint": "go",
+      "errorCode": ""
+    },
+    {
+      "name": "config initialized",
+      "wire": "{\"protocolVersion\": 1, \"method\": 27, \"params\": []}",
+      "endpoint": "go",
+      "errorCode": ""
+    },
+    {
+      "name": "network interfaces",
+      "wire": "{\"protocolVersion\": 1, \"method\": 28, \"params\": [\"[]\"]}",
+      "endpoint": "go",
+      "errorCode": ""
+    },
+    {
+      "name": "download",
+      "wire": "{\"protocolVersion\": 1, \"method\": 29, \"params\": [\"https://example.invalid/sub\", \"\", \"/tmp/config\"]}",
+      "endpoint": "go",
+      "errorCode": ""
+    },
+    {
+      "name": "clear DNS",
+      "wire": "{\"protocolVersion\": 1, \"method\": 30, \"params\": [\"\"]}",
+      "endpoint": "go",
+      "errorCode": ""
+    },
+    {
+      "name": "health check all",
+      "wire": "{\"protocolVersion\": 1, \"method\": 31, \"params\": []}",
+      "endpoint": "go",
+      "errorCode": ""
+    },
+    {
+      "name": "health check batch",
+      "wire": "{\"protocolVersion\": 1, \"method\": 32, \"params\": [\"{\\\"proxy-names\\\": [\\\"\\\\u8282\\\\u70b9\\\"], \\\"timeout\\\": 3000, \\\"test-url\\\": \\\"\\\"}\"]}",
+      "endpoint": "go",
+      "errorCode": ""
+    },
+    {
+      "name": "version",
+      "wire": "{\"protocolVersion\": 1, \"method\": 33, \"params\": []}",
+      "endpoint": "go",
+      "errorCode": ""
+    },
+    {
+      "name": "capabilities",
+      "wire": "{\"protocolVersion\": 1, \"method\": 34, \"params\": []}",
+      "endpoint": "go",
+      "errorCode": ""
+    },
+    {
+      "name": "VPN start",
+      "wire": "{\"protocolVersion\": 1, \"method\": 13, \"params\": []}",
+      "endpoint": "vpn",
+      "errorCode": ""
+    },
+    {
+      "name": "VPN stop",
+      "wire": "{\"protocolVersion\": 1, \"method\": 14, \"params\": []}",
+      "endpoint": "vpn",
+      "errorCode": ""
+    },
+    {
+      "name": "wrong bool",
+      "wire": "{\"protocolVersion\": 1, \"method\": 0, \"params\": [\"true\"]}",
+      "endpoint": "go",
+      "errorCode": "INVALID_PARAMS"
+    },
+    {
+      "name": "extra argument",
+      "wire": "{\"protocolVersion\": 1, \"method\": 33, \"params\": [1]}",
+      "endpoint": "go",
+      "errorCode": "INVALID_PARAMS"
+    },
+    {
+      "name": "missing argument",
+      "wire": "{\"protocolVersion\": 1, \"method\": 6, \"params\": [\"node\"]}",
+      "endpoint": "go",
+      "errorCode": "INVALID_PARAMS"
+    },
+    {
+      "name": "null parameter",
+      "wire": "{\"protocolVersion\": 1, \"method\": 17, \"params\": [null]}",
+      "endpoint": "go",
+      "errorCode": "INVALID_PARAMS"
+    },
+    {
+      "name": "fractional timeout",
+      "wire": "{\"protocolVersion\": 1, \"method\": 6, \"params\": [\"node\", 0.5]}",
+      "endpoint": "go",
+      "errorCode": "INVALID_PARAMS"
+    },
+    {
+      "name": "zero timeout",
+      "wire": "{\"protocolVersion\": 1, \"method\": 6, \"params\": [\"node\", 0]}",
+      "endpoint": "go",
+      "errorCode": "INVALID_PARAMS"
+    },
+    {
+      "name": "excessive timeout",
+      "wire": "{\"protocolVersion\": 1, \"method\": 6, \"params\": [\"node\", 60001]}",
+      "endpoint": "go",
+      "errorCode": "INVALID_PARAMS"
+    },
+    {
+      "name": "invalid mode",
+      "wire": "{\"protocolVersion\": 1, \"method\": 3, \"params\": [\"invalid\"]}",
+      "endpoint": "go",
+      "errorCode": "INVALID_PARAMS"
+    },
+    {
+      "name": "empty provider",
+      "wire": "{\"protocolVersion\": 1, \"method\": 7, \"params\": [\"\"]}",
+      "endpoint": "go",
+      "errorCode": "INVALID_PARAMS"
+    },
+    {
+      "name": "broken nested JSON",
+      "wire": "{\"protocolVersion\": 1, \"method\": 12, \"params\": [\"{\"]}",
+      "endpoint": "go",
+      "errorCode": "INVALID_PARAMS"
+    },
+    {
+      "name": "missing profile",
+      "wire": "{\"protocolVersion\": 1, \"method\": 12, \"params\": [\"{}\"]}",
+      "endpoint": "go",
+      "errorCode": "INVALID_PARAMS"
+    },
+    {
+      "name": "invalid nested field",
+      "wire": "{\"protocolVersion\": 1, \"method\": 32, \"params\": [\"{\\\"proxy-names\\\":[3],\\\"timeout\\\":3000,\\\"test-url\\\":\\\"\\\"}\"]}",
+      "endpoint": "go",
+      "errorCode": "INVALID_PARAMS"
+    },
+    {
+      "name": "missing access control",
+      "wire": "{\"protocolVersion\": 1, \"method\": 25, \"params\": [\"{\\\"mtu\\\":1400}\"]}",
+      "endpoint": "go",
+      "errorCode": "INVALID_PARAMS"
+    },
+    {
+      "name": "invalid interfaces",
+      "wire": "{\"protocolVersion\": 1, \"method\": 28, \"params\": [\"{}\"]}",
+      "endpoint": "go",
+      "errorCode": "INVALID_PARAMS"
+    },
+    {
+      "name": "invalid MTU",
+      "wire": "{\"protocolVersion\": 1, \"method\": 25, \"params\": [\"{\\\"mtu\\\": 0, \\\"accessControl\\\": {\\\"mode\\\": \\\"\\\", \\\"acceptList\\\": [], \\\"rejectList\\\": []}}\"]}",
+      "endpoint": "go",
+      "errorCode": "INVALID_PARAMS"
+    },
+    {
+      "name": "unknown method",
+      "wire": "{\"protocolVersion\": 1, \"method\": 999, \"params\": []}",
+      "endpoint": "go",
+      "errorCode": "UNKNOWN_METHOD"
+    },
+    {
+      "name": "unimplemented tunnel",
+      "wire": "{\"protocolVersion\": 1, \"method\": 1, \"params\": []}",
+      "endpoint": "go",
+      "errorCode": "UNSUPPORTED_METHOD"
+    },
+    {
+      "name": "unimplemented message stream",
+      "wire": "{\"protocolVersion\": 1, \"method\": 19, \"params\": []}",
+      "endpoint": "go",
+      "errorCode": "UNSUPPORTED_METHOD"
+    },
+    {
+      "name": "VPN method on Go",
+      "wire": "{\"protocolVersion\": 1, \"method\": 13, \"params\": []}",
+      "endpoint": "go",
+      "errorCode": "UNSUPPORTED_METHOD"
+    },
+    {
+      "name": "Go method on VPN",
+      "wire": "{\"protocolVersion\": 1, \"method\": 33, \"params\": []}",
+      "endpoint": "vpn",
+      "errorCode": "UNSUPPORTED_METHOD"
+    },
+    {
+      "name": "broken JSON",
+      "wire": "{",
+      "endpoint": "go",
+      "errorCode": "INVALID_REQUEST"
+    },
+    {
+      "name": "null request",
+      "wire": "null",
+      "endpoint": "go",
+      "errorCode": "INVALID_REQUEST"
+    },
+    {
+      "name": "array request",
+      "wire": "[]",
+      "endpoint": "go",
+      "errorCode": "INVALID_REQUEST"
+    },
+    {
+      "name": "missing method",
+      "wire": "{\"protocolVersion\":1,\"params\":[]}",
+      "endpoint": "go",
+      "errorCode": "INVALID_REQUEST"
+    },
+    {
+      "name": "string method",
+      "wire": "{\"protocolVersion\":1,\"method\":\"33\",\"params\":[]}",
+      "endpoint": "go",
+      "errorCode": "INVALID_REQUEST"
+    },
+    {
+      "name": "old protocol",
+      "wire": "{\"method\":33,\"params\":[]}",
+      "endpoint": "go",
+      "errorCode": "INCOMPATIBLE_VERSION"
+    },
+    {
+      "name": "future protocol",
+      "wire": "{\"protocolVersion\":2,\"method\":33,\"params\":[]}",
+      "endpoint": "go",
+      "errorCode": "INCOMPATIBLE_VERSION"
+    },
+    {
+      "name": "missing params",
+      "wire": "{\"protocolVersion\":1,\"method\":33}",
+      "endpoint": "go",
+      "errorCode": "INVALID_PARAMS"
+    },
+    {
+      "name": "null params",
+      "wire": "{\"protocolVersion\":1,\"method\":33,\"params\":null}",
+      "endpoint": "go",
+      "errorCode": "INVALID_PARAMS"
+    }
+  ],
+  "results": [
+    {
+      "name": "traffic",
+      "method": 0,
+      "result": "{\"up\":10,\"down\":20}",
+      "valid": true,
+      "streamReady": false
+    },
+    {
+      "name": "total traffic",
+      "method": 2,
+      "result": "{\"up\":0,\"down\":0}",
+      "valid": true,
+      "streamReady": false
+    },
+    {
+      "name": "groups",
+      "method": 3,
+      "result": "{}",
+      "valid": true,
+      "streamReady": false
+    },
+    {
+      "name": "empty providers",
+      "method": 4,
+      "result": "[]",
+      "valid": true,
+      "streamReady": false
+    },
+    {
+      "name": "provider",
+      "method": 4,
+      "result": "[{\"name\":\"test\",\"type\":\"Proxy\"}]",
+      "valid": true,
+      "streamReady": false
+    },
+    {
+      "name": "delay",
+      "method": 6,
+      "result": "{\"name\":\"节点\",\"value\":-1}",
+      "valid": true,
+      "streamReady": false
+    },
+    {
+      "name": "connections",
+      "method": 9,
+      "result": "{\"connections\":null}",
+      "valid": true,
+      "streamReady": false
+    },
+    {
+      "name": "empty connections",
+      "method": 9,
+      "result": "{}",
+      "valid": true,
+      "streamReady": false
+    },
+    {
+      "name": "request list",
+      "method": 20,
+      "result": "[]",
+      "valid": true,
+      "streamReady": false
+    },
+    {
+      "name": "VPN options",
+      "method": 24,
+      "result": "{\"enable\":true,\"port\":7890,\"ipv4Address\":\"172.19.0.1/30\",\"ipv6Address\":\"\"}",
+      "valid": true,
+      "streamReady": false
+    },
+    {
+      "name": "stopped runtime",
+      "method": 26,
+      "result": "0",
+      "valid": true,
+      "streamReady": false
+    },
+    {
+      "name": "runtime millis",
+      "method": 26,
+      "result": "1728300000000",
+      "valid": true,
+      "streamReady": false
+    },
+    {
+      "name": "config true",
+      "method": 27,
+      "result": "true",
+      "valid": true,
+      "streamReady": false
+    },
+    {
+      "name": "config false",
+      "method": 27,
+      "result": "false",
+      "valid": true,
+      "streamReady": false
+    },
+    {
+      "name": "download metadata",
+      "method": 29,
+      "result": "{}",
+      "valid": true,
+      "streamReady": false
+    },
+    {
+      "name": "batch delay",
+      "method": 32,
+      "result": "[{\"name\":\"node\",\"value\":23}]",
+      "valid": true,
+      "streamReady": false
+    },
+    {
+      "name": "core version",
+      "method": 33,
+      "result": "test-core",
+      "valid": true,
+      "streamReady": false
+    },
+    {
+      "name": "start true",
+      "method": 13,
+      "result": true,
+      "valid": true,
+      "streamReady": false
+    },
+    {
+      "name": "stop false",
+      "method": 14,
+      "result": false,
+      "valid": true,
+      "streamReady": false
+    },
+    {
+      "name": "log data",
+      "method": 22,
+      "result": "{\"logLevel\":\"info\",\"payload\":\"节点 EOF\",\"time\":123}",
+      "valid": true,
+      "streamReady": false
+    },
+    {
+      "name": "empty acknowledgement 5",
+      "method": 5,
+      "result": "",
+      "valid": true,
+      "streamReady": false
+    },
+    {
+      "name": "empty acknowledgement 7",
+      "method": 7,
+      "result": "",
+      "valid": true,
+      "streamReady": false
+    },
+    {
+      "name": "empty acknowledgement 8",
+      "method": 8,
+      "result": "",
+      "valid": true,
+      "streamReady": false
+    },
+    {
+      "name": "empty acknowledgement 10",
+      "method": 10,
+      "result": "",
+      "valid": true,
+      "streamReady": false
+    },
+    {
+      "name": "empty acknowledgement 11",
+      "method": 11,
+      "result": "",
+      "valid": true,
+      "streamReady": false
+    },
+    {
+      "name": "empty acknowledgement 12",
+      "method": 12,
+      "result": "",
+      "valid": true,
+      "streamReady": false
+    },
+    {
+      "name": "empty acknowledgement 15",
+      "method": 15,
+      "result": "",
+      "valid": true,
+      "streamReady": false
+    },
+    {
+      "name": "empty acknowledgement 16",
+      "method": 16,
+      "result": "",
+      "valid": true,
+      "streamReady": false
+    },
+    {
+      "name": "empty acknowledgement 17",
+      "method": 17,
+      "result": "",
+      "valid": true,
+      "streamReady": false
+    },
+    {
+      "name": "empty acknowledgement 18",
+      "method": 18,
+      "result": "",
+      "valid": true,
+      "streamReady": false
+    },
+    {
+      "name": "empty acknowledgement 21",
+      "method": 21,
+      "result": "",
+      "valid": true,
+      "streamReady": false
+    },
+    {
+      "name": "empty acknowledgement 23",
+      "method": 23,
+      "result": "",
+      "valid": true,
+      "streamReady": false
+    },
+    {
+      "name": "empty acknowledgement 25",
+      "method": 25,
+      "result": "",
+      "valid": true,
+      "streamReady": false
+    },
+    {
+      "name": "empty acknowledgement 28",
+      "method": 28,
+      "result": "",
+      "valid": true,
+      "streamReady": false
+    },
+    {
+      "name": "empty acknowledgement 30",
+      "method": 30,
+      "result": "",
+      "valid": true,
+      "streamReady": false
+    },
+    {
+      "name": "empty acknowledgement 31",
+      "method": 31,
+      "result": "",
+      "valid": true,
+      "streamReady": false
+    },
+    {
+      "name": "stream acknowledgement",
+      "method": 22,
+      "result": "",
+      "valid": true,
+      "streamReady": true
+    },
+    {
+      "name": "missing up",
+      "method": 0,
+      "result": "{\"down\":0}",
+      "valid": false,
+      "streamReady": false
+    },
+    {
+      "name": "traffic string",
+      "method": 2,
+      "result": "{\"up\":\"0\",\"down\":0}",
+      "valid": false,
+      "streamReady": false
+    },
+    {
+      "name": "bad provider",
+      "method": 4,
+      "result": "[{}]",
+      "valid": false,
+      "streamReady": false
+    },
+    {
+      "name": "invalid delay",
+      "method": 6,
+      "result": "{\"name\":\"node\",\"value\":\"10\"}",
+      "valid": false,
+      "streamReady": false
+    },
+    {
+      "name": "invalid connections",
+      "method": 9,
+      "result": "{\"connections\":[3]}",
+      "valid": false,
+      "streamReady": false
+    },
+    {
+      "name": "string boolean",
+      "method": 13,
+      "result": "true",
+      "valid": false,
+      "streamReady": false
+    },
+    {
+      "name": "missing acknowledgement",
+      "method": 11,
+      "result": null,
+      "valid": false,
+      "streamReady": false
+    },
+    {
+      "name": "old inactive runtime",
+      "method": 26,
+      "result": "clash服务未启动",
+      "valid": false,
+      "streamReady": false
+    },
+    {
+      "name": "negative runtime",
+      "method": 26,
+      "result": "-1",
+      "valid": false,
+      "streamReady": false
+    },
+    {
+      "name": "unsafe runtime",
+      "method": 26,
+      "result": "9007199254740992",
+      "valid": false,
+      "streamReady": false
+    },
+    {
+      "name": "numeric runtime",
+      "method": 26,
+      "result": 0,
+      "valid": false,
+      "streamReady": false
+    },
+    {
+      "name": "invalid config state",
+      "method": 27,
+      "result": "unknown",
+      "valid": false,
+      "streamReady": false
+    },
+    {
+      "name": "invalid log",
+      "method": 22,
+      "result": "{}",
+      "valid": false,
+      "streamReady": false
+    },
+    {
+      "name": "empty version",
+      "method": 33,
+      "result": "",
+      "valid": false,
+      "streamReady": false
+    },
+    {
+      "name": "invalid nested JSON",
+      "method": 0,
+      "result": "{",
+      "valid": false,
+      "streamReady": false
+    },
+    {
+      "name": "acknowledgement on ordinary method",
+      "method": 33,
+      "result": "",
+      "valid": false,
+      "streamReady": true
+    },
+    {
+      "name": "acknowledgement with data",
+      "method": 22,
+      "result": "{}",
+      "valid": false,
+      "streamReady": true
+    }
+  ]
+}

@@ -1,3 +1,4 @@
+export const getCompatibilityInfo: (() => string) | undefined;
 
 export const initClash: (path: string, version: string) => void;
 export const startTun: (fd: number, callback: (id: number, fd: number) => void) => Promise<boolean>;
@@ -29,4 +30,4 @@ export const startLog: (callback: (message: string, value: string) => void) => s
 export const startListener: () => void
 export const stopListener: () => void
 export const stopLog: () => void;
-export const startIpc: (path) => void;
+export const startIpc: (path: string) => void;

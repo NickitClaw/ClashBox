@@ -57,9 +57,160 @@ function noticeFixture(enabled = true, permission = () => Promise.resolve(true))
 const yaml = require(path.join(root, 'oh_modules/yaml/dist/index.js'));
 const { YamlUtils } = load('proxy_core/src/main/ets/utils/YamlUtils.ts', { yaml, '@kit.ArkTS': { util } });
 const rpcFrames = load('proxy_core/src/main/ets/rpc/RpcFrame.ets', { '@kit.ArkTS': { util } });
+const rpcGenerated = load('proxy_core/src/main/ets/rpc/RpcContract.generated.ts');
+const rpcContract = load('proxy_core/src/main/ets/rpc/RpcContract.ets', { './RpcContract.generated': rpcGenerated, '@kit.ArkTS': { JSON } });
 const flush = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
 const deferred = () => { let resolve; const promise = new Promise(r => resolve = r); return { promise, resolve }; };
 const nodeOf = uri => yaml.parse(YamlUtils.convertUniversalToClashYaml(uri)).proxies[0];
+
+test('RPC generated definitions are current and retain the published method IDs', () => {
+  require('node:child_process').execFileSync(process.execPath, ['scripts/generate-rpc.cjs', '--check'], { cwd: root });
+  const published = ['queryTrafficNow', 'queryTunnelState', 'queryTrafficTotal', 'queryProxyGroup', 'queryProviders',
+    'changeProxy', 'healthCheck', 'updateProvider', 'uploadProvider', 'queryConnections', 'closeConnection',
+    'clearConnections', 'load', 'startClash', 'stopClash', 'validConfig', 'reset', 'getCountryCode', 'updateGeoData',
+    'registerOnMessage', 'getRequestList', 'clearRequestList', 'setLogObserver', 'stopLogObserver', 'vpnOptions',
+    'setOptionState', 'GetVpnRunTime', 'VpnConfigInited', 'SetNetInterfaces', 'downloadConfig', 'SetSystemDns',
+    'healthCheckAll', 'healthCheckBatch', 'GetVersion'];
+  published.forEach((name, id) => assert.equal(rpcGenerated.ClashRpcType[name], id, name));
+});
+test('ArkTS validates the same independent wire examples as Go', () => {
+  const examples = JSON.parse(fs.readFileSync(path.join(root, 'tests/fixtures/rpc-wire.json'), 'utf8'));
+  for (const example of examples.requests) {
+    const run = () => rpcContract.decodeRpcRequest(example.wire, example.endpoint);
+    if (example.errorCode) assert.throws(run, e => e.code === example.errorCode, example.name);
+    else assert.doesNotThrow(run, example.name);
+  }
+  for (const example of examples.results) {
+    const response = { protocolVersion: 1, method: example.method, result: example.result };
+    if (example.streamReady) response.streamReady = true;
+    const run = () => rpcContract.decodeRpcResponse(JSON.stringify(response), example.method);
+    if (example.valid) assert.doesNotThrow(run, example.name);
+    else assert.throws(run, e => e.code === 'INVALID_RESPONSE', example.name);
+  }
+});
+test('RPC response envelopes reject wrong methods, versions, types and malformed errors', () => {
+  for (const response of [null, [], '{', { protocolVersion: 1, method: 32, result: 'core' },
+    { protocolVersion: 1, method: 33 }, { protocolVersion: 1, method: 33, result: 42 },
+    { protocolVersion: 1, method: 33, error: 'failed' },
+    { protocolVersion: 1, method: 33, error: 'failed', errorCode: 'INVALID_PARAMS', result: '' },
+    { protocolVersion: 1, method: 33, error: 'failed', errorCode: 'NEW_ERROR' },
+    { protocolVersion: 1, method: 33, result: 'core', streamReady: false }]) {
+    assert.throws(() => rpcContract.decodeRpcResponse(JSON.stringify(response), 33), e => e.code === 'INVALID_RESPONSE');
+  }
+  assert.throws(() => rpcContract.decodeRpcResponse('{"method":33,"result":"old"}', 33), e => e.code === 'INCOMPATIBLE_VERSION');
+  assert.throws(() => rpcContract.decodeRpcResponse('{"protocolVersion":1,"method":33,"error":"failed","errorCode":"INTERNAL_ERROR"}', 33),
+    e => e.code === 'INTERNAL_ERROR' && e.method === 33);
+});
+function compatibleCore() {
+  return { protocolVersion: rpcGenerated.RPC_PROTOCOL_VERSION, nativeAbiVersion: rpcGenerated.NATIVE_ABI_VERSION,
+    contractHash: rpcGenerated.RPC_CONTRACT_HASH, coreVersion: 'test-core', capabilities: [...rpcGenerated.RPC_CAPABILITIES] };
+}
+test('Native and remote compatibility checks reject legacy or mixed builds', () => {
+  const native = lib => load('proxy_core/src/main/ets/rpc/NativeCompatibility.ets', {
+    'libflclash.so': lib, './RpcContract': rpcContract, './RpcContract.generated': rpcGenerated
+  }).assertNativeCompatibility;
+  assert.throws(native({}), e => e.code === 'INCOMPATIBLE_VERSION');
+  assert.equal(native({ getCompatibilityInfo: () => JSON.stringify(compatibleCore()) })().coreVersion, 'test-core');
+  for (const changed of [{ protocolVersion: 99 }, { nativeAbiVersion: 99 }, { contractHash: 'old' },
+    { capabilities: [] }, { coreVersion: '' }, { capabilities: null }]) {
+    const check = native({ getCompatibilityInfo: () => JSON.stringify({ ...compatibleCore(), ...changed }) });
+    assert.throws(check, e => e.code === 'INCOMPATIBLE_VERSION');
+  }
+  assert.throws(() => rpcContract.assertRpcCompatibility('{'), e => e.code === 'INCOMPATIBLE_VERSION');
+});
+function rpcSocketFixture() {
+  const clients = [], time = clock();
+  class Socket {
+    constructor() { this.handlers = {}; this.closed = false; this.requests = []; clients.push(this); }
+    on(name, fn) { this.handlers[name] = fn; } off(name) { delete this.handlers[name]; }
+    async connect(options) { this.path = options.address.address; }
+    async send(value) { this.requests.push(JSON.parse(new rpcFrames.RpcFrameBuffer().push(new Uint8Array(value.data))[0])); }
+    async close() { this.closed = true; }
+    respond(response) { this.bytes(rpcFrames.encodeRpcFrame(JSON.stringify(response))); }
+    bytes(bytes) { this.handlers.message?.({ message: Uint8Array.from(Buffer.from(bytes)).buffer }); }
+  }
+  const { SocketProxyService } = load('proxy_core/src/main/ets/rpc/SocketProxyService.ets', {
+    '@kit.NetworkKit': { socket: { constructLocalSocketInstance: () => new Socket() } },
+    '@kit.ArkTS': { JSON, util }, '@kit.CoreFileKit': { fileIo: { access: async () => true } },
+    './RpcFrame': rpcFrames, './IClashManager': rpcGenerated, './RpcContract': rpcContract, './RpcContract.generated': rpcGenerated
+  }, time);
+  const service = new SocketProxyService(); service.init({ filesDir: '/mock' });
+  return { service, clients, time };
+}
+test('Concurrent business calls wait for one compatibility handshake, then use the correct endpoints', async () => {
+  const f = rpcSocketFixture();
+  const version = f.service.getVersion(), start = f.service.startClash(); await flush();
+  assert.equal(f.clients.length, 1); assert.equal(f.clients[0].requests[0].method, 34);
+  f.clients[0].respond({ protocolVersion: 1, method: 34, result: JSON.stringify(compatibleCore()) }); await flush();
+  assert.equal(f.clients.length, 3);
+  for (const client of f.clients.slice(1)) {
+    const request = client.requests[0];
+    assert.equal(request.protocolVersion, 1);
+    assert.ok(client.path.endsWith(request.method === 13 ? '/ClashBox.sock' : '/clash_go.sock'));
+    client.respond({ protocolVersion: 1, method: request.method, result: request.method === 13 ? true : 'core' });
+  }
+  assert.equal(await version, 'core'); assert.equal(await start, true);
+  assert.equal(f.time.timeouts.size, 0); assert.ok(f.clients.every(c => c.closed));
+  await f.service.ensureCompatibility(); assert.equal(f.clients.length, 3);
+});
+test('Invalid requests allocate no socket; mismatched handshake prevents business calls and permits a clean retry', async () => {
+  const f = rpcSocketFixture(); let recovered = 0; f.service.onConnectionRefused = () => recovered++;
+  await assert.rejects(f.service.healthCheckBatch(['node'], 0), e => e.code === 'INVALID_PARAMS');
+  await assert.rejects(f.service.registerMessage(() => {}), e => e.code === 'UNSUPPORTED_METHOD');
+  assert.equal(f.clients.length, 0);
+  const pending = f.service.getVersion(), rejected = assert.rejects(pending, e => e.code === 'INCOMPATIBLE_VERSION'); await flush();
+  f.clients[0].respond({ protocolVersion: 1, method: 34, result: JSON.stringify({ ...compatibleCore(), contractHash: 'old' }) });
+  await rejected; assert.equal(f.clients.length, 1); assert.equal(recovered, 0); assert.ok(f.clients[0].closed);
+  const next = f.service.getVersion(); await flush(); assert.equal(f.clients[1].requests[0].method, 34);
+  f.clients[1].respond({ protocolVersion: 1, method: 34, result: JSON.stringify(compatibleCore()) }); await flush();
+  f.clients[2].respond({ protocolVersion: 1, method: 33, result: 'core' }); assert.equal(await next, 'core');
+});
+test('Legacy and wrong-type socket responses reject promptly and release timers and sockets', async () => {
+  const f = rpcSocketFixture(); f.service.ensureCompatibility = async () => compatibleCore();
+  for (const response of [{ result: 'legacy' }, { protocolVersion: 1, method: 33, result: false }]) {
+    const rejected = assert.rejects(f.service.getVersion(), e => ['INCOMPATIBLE_VERSION', 'INVALID_RESPONSE'].includes(e.code));
+    await flush(); f.clients.at(-1).respond(response); await rejected;
+    assert.ok(f.clients.at(-1).closed); assert.equal(f.time.timeouts.size, 0);
+  }
+});
+test('Log subscription waits for acknowledgement, handles coalesced data and closes on invalid data', async () => {
+  const f = rpcSocketFixture(); f.service.ensureCompatibility = async () => compatibleCore();
+  const logs = []; let resolved = false;
+  const subscribing = f.service.setLogObserver(log => logs.push(log)).then(stop => { resolved = true; return stop; });
+  await flush(); assert.equal(resolved, false); assert.equal(f.time.timeouts.size, 1);
+  const frame = response => Buffer.from(rpcFrames.encodeRpcFrame(JSON.stringify({ protocolVersion: 1, method: 22, ...response })));
+  const log = { logLevel: 'info', payload: '节点 EOF', time: 123 };
+  f.clients[0].bytes(Buffer.concat([frame({ result: '', streamReady: true }), frame({ result: JSON.stringify(log) })]));
+  const stop = await subscribing; assert.equal(logs.length, 1); assert.equal(logs[0].payload, log.payload);
+  assert.equal(f.time.timeouts.size, 0); assert.equal(f.clients[0].closed, false);
+  f.clients[0].bytes(frame({ result: '{}' })); assert.ok(f.clients[0].closed); assert.equal(logs.length, 1);
+  stop(); stop();
+});
+test('Log subscription rejects missing acknowledgement, remote errors and confirmation timeout', async () => {
+  for (const kind of ['missing', 'error', 'timeout']) {
+    const f = rpcSocketFixture(); f.service.ensureCompatibility = async () => compatibleCore();
+    const rejected = assert.rejects(f.service.setLogObserver(() => assert.fail('no data before ack')));
+    await flush();
+    if (kind === 'timeout') [...f.time.timeouts.values()][0]();
+    else f.clients[0].respond({ protocolVersion: 1, method: 22, ...(kind === 'error'
+      ? { error: 'unavailable', errorCode: 'INTERNAL_ERROR' }
+      : { result: '{"logLevel":"info","payload":"x","time":0}' }) });
+    await rejected; assert.ok(f.clients[0].closed); assert.equal(f.time.timeouts.size, 0);
+  }
+});
+test('VPN endpoint rejects malformed requests before invoking lifecycle operations', async () => {
+  const f = vpnFixture(); const replies = [], invoked = [];
+  f.service.sendClient = async (_, value) => replies.push(JSON.parse(value));
+  f.service.onRemoteMessage = async method => { invoked.push(method); return true; };
+  const client = { clientId: 1, close: async () => {} };
+  for (const request of [{ protocolVersion: 1, method: 13, params: ['extra'] }, { protocolVersion: 1, method: 33, params: [] },
+    { method: 13, params: [] }, { protocolVersion: 1, method: 13, params: [] }]) {
+    await f.service.onRemoteMessageRequest(client, { message: rpcFrames.encodeRpcFrame(JSON.stringify(request)) });
+  }
+  assert.deepEqual(replies.slice(0, 3).map(r => r.errorCode), ['INVALID_PARAMS', 'UNSUPPORTED_METHOD', 'INCOMPATIBLE_VERSION']);
+  assert.deepEqual(invoked, [13]); assert.equal(replies[3].result, true); assert.equal(replies[3].method, 13);
+  assert.ok(replies.every(r => r.protocolVersion === 1));
+});
 
 test('SS SIP002, legacy and IPv6 preserve real credentials and names', () => {
   const auth = 'aes-256-gcm:p:a密钥';
@@ -145,15 +296,16 @@ test('Concurrent RPC connections do not share UTF-8 state; send failures reject 
   const mod = load('proxy_core/src/main/ets/rpc/SocketProxyService.ets', {
     '@kit.NetworkKit': { socket: { constructLocalSocketInstance: () => new Socket() } },
     '@kit.ArkTS': { JSON, util }, '@kit.CoreFileKit': { fileIo: { access: async () => true } },
-    './RpcFrame': rpcFrames, './IClashManager': { ClashRpcType: { startClash: 13, stopClash: 14 } }
+    './RpcFrame': rpcFrames, './IClashManager': rpcGenerated, './RpcContract': rpcContract, './RpcContract.generated': rpcGenerated
   }, time);
   const service = new mod.SocketProxyService(); service.init({ filesDir: '/mock' });
-  const a = service.sendMessageRequest(1), b = service.sendMessageRequest(2); await flush();
-  const data = Buffer.from(rpcFrames.encodeRpcFrame('{"result":"节点"}')); const split = data.length - 3;
-  clients[0].message(data.subarray(0, split)); clients[1].message(Buffer.from(rpcFrames.encodeRpcFrame('{"result":"OK"}')));
+  service.ensureCompatibility = async () => ({});
+  const a = service.sendMessageRequest(17, ['example']), b = service.sendMessageRequest(33); await flush();
+  const data = Buffer.from(rpcFrames.encodeRpcFrame('{"protocolVersion":1,"method":17,"result":"节点"}')); const split = data.length - 3;
+  clients[0].message(data.subarray(0, split)); clients[1].message(Buffer.from(rpcFrames.encodeRpcFrame('{"protocolVersion":1,"method":33,"result":"OK"}')));
   clients[0].message(data.subarray(split)); assert.equal(await a, '节点'); assert.equal(await b, 'OK');
   assert.equal(time.timeouts.size, 0); assert.ok(clients.every(c => c.closed));
-  failSend = true; await assert.rejects(service.sendMessageRequest(1), /injected send failure/);
+  failSend = true; await assert.rejects(service.sendMessageRequest(17, ['example']), /injected send failure/);
   assert.ok(clients.at(-1).closed);
 });
 function profileFixture({ passthrough = false } = {}) {
@@ -485,7 +637,7 @@ function vpnFixture({ failTun = false, stopGate } = {}) {
   const common = load('proxy_core/src/main/ets/rpc/CommonVpnService.ets', { '@kit.NetworkKit': network, './RpcFrame': rpcFrames });
   const mod = load('proxy_core/src/main/ets/rpc/FlClashVpnService.ets', {
     '@kit.NetworkKit': network, '@kit.ArkTS': { JSON, util }, './CommonVpnService': common, './RpcFrame': rpcFrames,
-    './IClashManager': { ClashRpcType: { GetVersion: 33, GetVpnRunTime: 26 } },
+    './IClashManager': rpcGenerated, './RpcContract': rpcContract, './RpcContract.generated': rpcGenerated,
     'libflclash.so': {
       stopTun: async () => { calls.push('stopTun'); if (stopGate) await stopGate.promise; calls.push('stopTunDone'); },
       startTun: async () => { calls.push('startTun'); return true; }, startIpc() {},
@@ -549,6 +701,7 @@ function viewModelFixture() {
   const service = new ClashViewModel(); service.loadConfig = async () => calls.push('loadConfig');
   service.loadVpnOptions = async () => calls.push('loadOptions');
   service.socketProxy.isSocketReady = async () => true;
+  service.socketProxy.ensureCompatibility = async () => ({});
   service.socketProxy.getRuntime = async () => 0;
   service.socketProxy.startClash = async () => { calls.push('start'); return true; };
   service.socketProxy.stopClash = async () => { calls.push('stop'); return true; };

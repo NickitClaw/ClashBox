@@ -1,3 +1,4 @@
+import { assertNativeCompatibility } from 'proxy_core/src/main/ets/rpc/NativeCompatibility';
 import { ProfileRepo } from "proxy_core/src/main/ets/ProfileRepo";
 import { Context, Want } from "@kit.AbilityKit";
 import { SocketProxyService, Profile, ProfileType, UpdateConfigParams, ClashConfig, getHome,
@@ -406,6 +407,11 @@ export class ClashViewModel {
   //BUG 第一次启动，参数传不过去
   // 第一次要权限弹窗
   async ChangeCore(coreType: ClashCore | undefined = undefined, restart: boolean = true) {
+    try { assertNativeCompatibility(); } catch (e) {
+      ClashViewModel.promptAction?.showToast({ message: (e as Error).message, duration: 5000 });
+      throw e as Error;
+    }
+    this.socketProxy.resetCompatibility();
     let requestId = Date.now();
     this.vpnRequestId = requestId;
     const vpnWant = {
@@ -427,6 +433,10 @@ export class ClashViewModel {
     let result = false
     for (let i = 0; i < 30; i++) {
       if (await this.checkVpnVpnAbility(requestId) && await this.socketProxy.isSocketReady()) {
+        try { await this.socketProxy.ensureCompatibility(); } catch (e) {
+          ClashViewModel.promptAction?.showToast({ message: (e as Error).message, duration: 5000 });
+          throw e as Error;
+        }
         result = true
         break
       }
@@ -522,6 +532,7 @@ export class ClashViewModel {
       let ready = await this.socketProxy.isSocketReady()
       if (!ready) ready = await this.ChangeCore(undefined, true)
       if (!ready) throw new Error('VPN 扩展未就绪')
+      await this.socketProxy.ensureCompatibility()
       if (!this.desiredRunning || generation !== this.intentGeneration) return
       if (Number(await this.socketProxy.getRuntime()) > 0) {
         this.vpnStarted = true

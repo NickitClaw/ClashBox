@@ -5,8 +5,10 @@ package main
 //#include "bridge.h"
 import "C"
 import (
+	"core/rpccontract"
 	"core/state"
 	"encoding/json"
+	"github.com/metacubex/mihomo/constant"
 	"strings"
 	"sync"
 	"unsafe"
@@ -317,7 +319,12 @@ func startIpc(env js.Env, this js.Value, args []js.Value) any {
 	return env.ValueOf("")
 }
 
+func getCompatibilityInfo(env js.Env, this js.Value, args []js.Value) any {
+	return rpccontract.CompatibilityJSON(constant.Version)
+}
+
 func init() {
+	entry.Export("getCompatibilityInfo", js.AsCallback(getCompatibilityInfo))
 	entry.Export("initClash", js.AsCallback(initClash))
 	entry.Export("startTun", js.AsCallback(startTun))
 	entry.Export("setFdMap", js.AsCallback(setFdMap))
