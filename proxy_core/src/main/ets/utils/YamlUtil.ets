@@ -32,14 +32,9 @@ export class YamlUtil {
 
         const modifiedConfigJsonStr = ScriptExecutor.execute(scriptContent, configJsonStr, profileName);
 
-        // 变更检测：如果脚本执行后内容没变，直接返回原内容，标记未修改
-        if (configJsonStr === modifiedConfigJsonStr) {
-          console.info(`[YamlUtils] 配置 [${profileName}] 未被脚本修改，跳过备份和注入`);
-          return yamlContent;
-        }
-
-        processedYaml = stringify(JSON.parse(modifiedConfigJsonStr));
-        console.info(`[YamlUtils] 配置 [${profileName}] JS 脚本执行完毕，已发生修改`);
+        // Identity scripts must still pass through rule/DNS processing below.
+        processedYaml = configJsonStr === modifiedConfigJsonStr ? yamlContent : stringify(JSON.parse(modifiedConfigJsonStr));
+        console.info(`[YamlUtils] 配置 [${profileName}] JS 脚本执行完毕`);
       } catch (e) {
         console.error(`[YamlUtils] 执行用户脚本失败: ${e}`);
         throw new Error(e);

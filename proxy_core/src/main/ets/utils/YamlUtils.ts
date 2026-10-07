@@ -273,18 +273,13 @@ export class YamlUtils {
     if (!overrideStr || overrideStr.trim() === '') {
       return yamlContent
     }
-    try {
-      const base = YamlUtils.parseYamlSafe(yamlContent);
-      const ov = YamlUtils.parseYamlSafe(overrideStr);
-      if (!ov || typeof ov !== 'object') {
-        return yamlContent
-      }
-      YamlUtils.deepMerge(base, ov)
-      return stringify(base)
-    } catch (e) {
-      console.warn('YAML 覆写合并失败，保留原配置:', e)
-      return yamlContent
+    const base = YamlUtils.parseYamlSafe(yamlContent);
+    const ov = YamlUtils.parseYamlSafe(overrideStr);
+    if (!ov || typeof ov !== 'object' || Array.isArray(ov)) {
+      throw new Error('YAML 覆写必须是对象');
     }
+    YamlUtils.deepMerge(base, ov);
+    return stringify(base);
   }
 
   static injectDnsFields(yamlContent: string, customRules: string[] = [], deleteRules: string[] = [], fixTlsFingerprint: boolean = true): string {

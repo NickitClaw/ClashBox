@@ -43,6 +43,25 @@ devecocli build --modules entry --build-mode debug
 `appPath`、`CommonVpnService` 和 `FlClashVpnService` 的唯一源码入口为 `.ets`。
 构建缓存和 source map 的模块键可能以 `.ts` 结尾，其 `sources` 字段仍指向 `.ets`；不要将生成文件复制回源码目录，也不要维护同路径同名的 `.ts` / `.ets` 两套实现。
 
+配置开发入口为 `proxy_core/src/main/ets/Profile.ets`，具体职责分配如下：
+
+| 模块 | 职责 |
+| --- | --- |
+| `profile/ProfileDownloader.ets` | 原生/系统 HTTP 下载、响应元数据与下载临时文件清理 |
+| `profile/ProfileTransformer.ets` | 节点链接转换、YAML 覆写、脚本与规则处理；通过 TaskPool 执行 |
+| `profile/ProfileStorage.ets` | 按配置的跨进程锁、完整读写、内核校验、原子替换与脚本备份 |
+
+新增配置修改功能应调用 `Profile`，不要在页面或后台任务直接覆盖 `config.yaml`：
+
+- `save` / `saveByUri` / `update` 共用转换与存储流程，订阅元数据在配置提交成功后更新。
+- `saveByUri(uri, validate, ...)`、`repairMissingRules(validate, ...)`、`forceRewriteRules(validate, ...)` 和 `ensureProvidersLazy(validate)` 必须提供内核校验回调，例如 `(path: string): Promise<string> => socketProxy.vailConfig(path)`；空字符串表示通过，其它结果或异常使操作失败。
+- 手动编辑调用 `ClashViewModel.saveProfileContent(id, content, expectedContent)`，保留编辑后的 YAML 文本和注释；不重复执行脚本/覆写。保存时在锁内比较打开编辑器时的内容，拒绝覆盖后台更新或已删除的配置。
+- 规则修复、重排、provider 迁移和脚本操作在同一把锁内完成读取、转换、校验和替换。`false` 表示未修改或目标不存在，实际失败通过异常向上传递。
+- 脚本重应用从首次备份开始，避免重复叠加修改；恢复失败保留备份。导入新配置或手动保存成功后清除旧脚本备份。
+
+`ProfileStorage.transaction` 回调中的 `ProfileTransaction` 只在当前事务内有效，不能嵌套获取同一配置的锁。
+内核校验和最终替换使用同一个唯一临时文件，校验失败、取消或写入失败时不会先截断现有配置。
+
 IPC 请求和响应统一使用「4 字节大端 UTF-8 字节数 + JSON」帧，单帧上限 4 MiB；日志连接支持连续多帧。
 因此 ArkTS 客户端、扩展进程和 `libflclash.so` 必须一起更新。NAPI `startTun` 返回 `Promise<boolean>`，
 `stopTun` 返回 `Promise<void>`，完成/失败均由原生层确认。不要替换回旧 `.so` 后仅测试前端构建。

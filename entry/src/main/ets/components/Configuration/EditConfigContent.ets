@@ -6,16 +6,14 @@ import {
   BIND_SHEET_MAIN_FONT_WEIGHT, BIND_SHEET_SUB_FONTSIZE,
   NewConfigData,} from "../../common/entity/Constants";
 import { BindSheetTitleCustomBuilder } from "../Common/Common"
-import { EventHub, EventKey } from "../../common/EventHub";
 import { WebCodeEditor } from "../Common/CodeEditor";
 import { EditorCommunicationManager, WebCodeEditorOptions } from "../../common/entity/WebCodeEditor";
 import { webview } from "@kit.ArkWeb";
 import { hilog } from "@kit.PerformanceAnalysisKit";
-import { fileIo, fileUri } from "@kit.CoreFileKit";
 import { ConfigData } from "../../common/entity/PageArgumentEntity";
-import { BusinessError } from '@kit.BasicServicesKit';
-import { util } from "@kit.ArkTS";
-import { common } from "@kit.AbilityKit";
+
+import ClashViewModel from "../../entryability/ClashViewModel";
+import { Xb_ToastUtil } from "xb_components";
 
 @Builder
 export function EditConfigContentBuilder(name: string, param: Object){
@@ -35,7 +33,8 @@ struct EditConfigContent {
   @Consume('currentColorMode') currentColorMode: boolean
 
   @StorageLink('ConfigContent') configStr: string = ''
-  @State lastConfigStrLength: number = 0
+  private savedContent: string = ''
+  @State private saving: boolean = false
 
   @StorageLink('uiConfig') uiConfig: UIConfig = new UIConfig()
   // 主页面栈
@@ -69,20 +68,11 @@ struct EditConfigContent {
     // 回调函数
     onContentChange: (content: string) => {
       this.configStr = content;
-      console.log(`WebCodeEditor 初始文本长度：${this.lastConfigStrLength}，编辑文本：${JSON.stringify(content)}`)
-      if (this.lastConfigStrLength !== content.length) {
-        if (this.fileMenus.filter(i => i === this.saveMenus).length <= 0) {
-          // 新增`保存配置`菜单按钮
-          this.fileMenus.push(this.saveMenus)
-        }
+      this.configContentChange = content !== this.savedContent;
+      if (this.configContentChange) {
+        if (!this.fileMenus.includes(this.saveMenus)) this.fileMenus.push(this.saveMenus);
       } else {
-        // 移除`保存配置`菜单按钮
-        for (let i = 0; i < this.fileMenus.length; i++) {
-          if (this.fileMenus[i] === this.saveMenus) {
-            this.fileMenus.splice(i, 1)
-            break
-          }
-        }
+        this.fileMenus = this.fileMenus.filter((menu) => menu !== this.saveMenus);
       }
       console.info('WebCodeEditor 内容已更新');
     },
@@ -90,7 +80,7 @@ struct EditConfigContent {
       console.info(`WebCodeEditor 编辑状态: ${isEditing}`);
     },
     onSelectionChange: (selection) => {
-      console.info(`WebCodeEditor 选中文本: ${selection.text}`);
+      // Selection may contain subscription credentials; do not log its content.
     },
     onSave: () => {
       console.info('WebCodeEditor 保存操作触发');
@@ -113,7 +103,8 @@ struct EditConfigContent {
     this.saveMenus.symbolBackgroundColor = this.icon_emphasize
     this.editorOptions.theme = this.currentColorMode ? 'dark' : 'light'
     hilog.info(0x0000, 'WebCodeEditor', `初始要传递的 theme: ${this.editorOptions.theme}`);
-    this.lastConfigStrLength = this.configStr.length
+    this.savedContent = this.configStr
+    this.configContentChange = false
   }
 
   aboutToDisappear(): void {
@@ -158,6 +149,7 @@ struct EditConfigContent {
           webController: this.webController,
           commManager: this.commManager, // 传入通信管理器
         })
+          .enabled(!this.saving)
           .layoutWeight(1)
           .width('100%')
           .margin(8)
@@ -171,6 +163,7 @@ struct EditConfigContent {
     .hideTitleBar(true)
     .backgroundColor($r('app.color.background'))
     .onBackPressed(() => {
+      if (this.saving) return true;
       if (this.configContentChange) {
         // 弹框是否保存已经编辑好的配置
         this.configCustomConfirmDialogController?.open()
@@ -194,39 +187,34 @@ struct EditConfigContent {
     .animation({ duration: this.uiConfig.animationSpeed , curve: Curve.Ease })
   }
 
-  /** 保存配置 */
-  async saveConfigContent() {
+  /** Stay on the editor on failure so that the user's text is not lost. */
+  async saveConfigContent(): Promise<boolean> {
+    if (this.saving) return false;
+    this.saving = true;
     try {
-      // 先从 WebView 强制获取最新内容
-      const latestContent = await this.commManager.sendCommand('getContent');
-      const newConfigStr = latestContent as string;
-      console.info("EditConfig #saveConfigContent newConfigStr size is:" + newConfigStr.length);
-      this.configStr = newConfigStr;
-
-      //  创建指定编码的编码器
-      const textEncoder: util.TextEncoder = new util.TextEncoder('utf-8');
-      // 使用 encodeInto() 方法，返回 Uint8Array
-      const encodedData: Uint8Array = textEncoder.encodeInto(newConfigStr)
-
-      // 获取上下文路径
-      const context = this.getUIContext().getHostContext() as common.UIAbilityContext;
-      const sandPath = context.filesDir + `/ClashBox/profiles/` + this.currentTouchConfigData.configId + '/config.yaml';
-      console.debug("EditConfig #saveConfigContent sandPath:" + sandPath);
-      const sandboxUri = fileUri.getUriFromPath(sandPath);
-      console.debug("EditConfig #saveConfigContent sandboxUri:" + sandboxUri);
-
-      // 添加 TRUNC 标志，确保覆盖写入时清空旧文件内容
-      const fileModify = fileIo.openSync(
-        sandboxUri,
-        fileIo.OpenMode.READ_WRITE | fileIo.OpenMode.CREATE | fileIo.OpenMode.TRUNC
-      );
-      console.debug("EditConfig #saveConfigContent file fd:" + fileModify.fd);
-      const writeLen = fileIo.writeSync(fileModify.fd, newConfigStr);
-      console.info("EditConfig #saveConfigContent write data to file succeed, writeLen:" + writeLen);
-      fileIo.closeSync(fileModify.fd);
-      console.debug("EditConfig #saveConfigContent file closed");
+      const content = await this.commManager.sendCommand('getContent');
+      if (typeof content !== 'string') throw new Error('无法读取编辑内容，请重试');
+      this.configStr = content;
+      await ClashViewModel.saveProfileContent(this.currentTouchConfigData.configId, content, this.savedContent);
+      this.savedContent = content;
+      this.configContentChange = this.configStr !== content;
+      if (this.configContentChange) return false;
+      this.fileMenus = this.fileMenus.filter((menu) => menu !== this.saveMenus);
+      return true;
     } catch (error) {
-      console.error(`EditConfig #saveConfigContent 保存配置文本时错误，message: ${(error as Error).message}`);
+      this.configContentChange = this.configStr !== this.savedContent;
+      const message = (error as Error)?.message || String(error);
+      Xb_ToastUtil.showToast({ message: `保存失败：${message}`, duration: 3000 });
+      return false;
+    } finally {
+      this.saving = false;
+    }
+  }
+
+  async saveAndClose(): Promise<void> {
+    if (await this.saveConfigContent()) {
+      this.pageInfos.pop(true);
+      this.isShowConfigAddBindSheet = true;
     }
   }
 
@@ -243,9 +231,7 @@ struct EditConfigContent {
       },
       confirm: ()=> {
         // 保存配置
-        this.saveConfigContent()
-        this.pageInfos.pop(true)
-        this.isShowConfigAddBindSheet = true
+        this.saveAndClose()
       }
     }),
     cancel: () => {
@@ -288,10 +274,7 @@ struct EditConfigContent {
     // 跟随主题色：由于在这里直接赋值 this.icon_emphasize 编译器提示需要初始化 this.icon_emphasize 的值，放到了 aboutToAppear 回调里重新赋值
     symbolBackgroundColor: '#FF0A59F7',
     action: () => {
-      this.saveConfigContent()
-      // 保存配置后返回上一页
-      this.pageInfos.pop(true)
-      this.isShowConfigAddBindSheet = true
+      this.saveAndClose()
     }
   }
 

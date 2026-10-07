@@ -175,26 +175,15 @@ export class ClashViewModel {
         }
         newProfile.loadContext(this.context)
         console.log(`配置${profile.name}基础设置完成`)
-        try {
-          await newProfile.saveByUri(profile.url)
-        } catch (err) {
-          console.error(`ClashBox Restore 配置移动读取失败 ${err.name} ${err.message}`)
-        }
+        await newProfile.saveByUri(newProfile.url, (path: string): Promise<string> => this.socketProxy.vailConfig(path))
       }
       const isExists = await newProfile.check();
       if (isExists) {
         console.log(`配置${newProfile.name}已发现`)
-        this.profileRepo.addOrUpdate(newProfile)
-          .then((value) => {
-            hilog.info(0xFF00, "Restore configSaveTestTag", `文件名${newProfile.name} URL: ${newProfile.url} 保存结果${value}`)
-            EventHub.sendEvent(EventKey.FetchProfile, null)
-          })
-          .catch((err: Error) => {
-            console.error(`ClashBox Restore 配置插入失败 ${err.name} ${err.message}`)
-          })
+        await this.profileRepo.addOrUpdate(newProfile)
+        EventHub.sendEvent(EventKey.FetchProfile, null)
       } else {
-        console.error("ClashBox 配置文件不存在，保存失败");
-        ClashViewModel.promptAction.showToast({message: "文件保存失败！"})
+        throw new Error('配置文件不存在，恢复失败')
       }
     }
   }
@@ -208,7 +197,7 @@ export class ClashViewModel {
     }
     profile.loadContext(this.context)
     profile.name = name // decodeURIComponent(path.substring(path.lastIndexOf('/') + 1))
-    await profile.saveByUri(path);
+    await profile.saveByUri(path, (configPath: string): Promise<string> => this.socketProxy.vailConfig(configPath));
     const isExists = await profile.check();
     if (isExists) {
       try {
@@ -221,6 +210,14 @@ export class ClashViewModel {
     } else {
       ClashViewModel.promptAction.showToast({message: "文件保存失败！"})
     }
+  }
+
+  async saveProfileContent(id: string, content: string, expectedContent: string): Promise<void> {
+    const profile = await this.getProfile(id);
+    if (!profile) throw new Error('配置已被删除，请返回配置列表');
+    profile.loadContext(this.context);
+    await profile.saveEditedContent(content, (path: string): Promise<string> => this.socketProxy.vailConfig(path), expectedContent);
+    EventHub.sendEvent(EventKey.FetchProfile, null);
   }
 
   async updateProfileConfig(id: string | null): Promise<void> {
@@ -364,7 +361,10 @@ export class ClashViewModel {
   }
   async deleteProfile(id: string): Promise<void>{
     let p = await this.getProfile(id)
-    p?.delete()
+    if (p) {
+      p.loadContext(this.context)
+      await p.delete()
+    }
     await this.profileRepo.delete(id)
     EventHub.sendEvent(EventKey.FetchProfile, null)
   }
