@@ -53,6 +53,13 @@ func Start(fd int, device string, stack constant.TUNStack, dnsHijack []string) (
 		dnsHijack = append(dnsHijack, net.JoinHostPort(state.GetDnsServerAddress(), "53"))
 	}
 
+	// 系统 VPN 网卡 MTU 默认为 1400（ArkTS 侧 FlClashVpnService），协议栈 MTU 必须与之一致：
+	// 之前硬编码 9000 导致下行大包进不了系统网卡被丢弃（ICMP 小包正常、TCP 卡死的断流根因）
+	mtu := state.CurrentState.Mtu
+	if mtu < 576 || mtu > 65535 {
+		mtu = 1400
+	}
+
 	options := LC.Tun{
 		Enable:              true,
 		Device:              device,
@@ -62,7 +69,7 @@ func Start(fd int, device string, stack constant.TUNStack, dnsHijack []string) (
 		AutoDetectInterface: false,
 		Inet4Address:        prefix4,
 		Inet6Address:        prefix6,
-		MTU:                 9000,
+		MTU:                 uint32(mtu),
 		FileDescriptor:      fd,
 	}
 

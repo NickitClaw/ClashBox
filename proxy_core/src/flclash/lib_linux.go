@@ -209,8 +209,10 @@ func initSocketHook(markSocket func(Fd)) {
 			case ok := <-result:
 				if !ok {
 					protectErr = errors.New("VPN socket protection failed")
+					log.Errorln("[protect] ack failed id=%d fd=%d addr=%s", id, fd, address)
 				}
 			case <-timer.C:
+				log.Errorln("[protect] ack TIMEOUT id=%d fd=%d addr=%s", id, fd, address)
 				protectErr = errors.New("VPN socket protection timed out")
 			}
 		})
