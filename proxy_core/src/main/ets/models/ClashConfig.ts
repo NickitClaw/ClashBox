@@ -28,6 +28,7 @@ const defaultGeoXMap = {
 
 export const defaultMixedPort = 7890;
 export const defaultKeepAliveInterval = 30;
+export const SNIFFER_DEFAULTS_VERSION = 1;
 
 /**
  * 默认 hosts 映射(与 entry 层 updateData 共用同一常量, 避免两处重复定义不一致)。
@@ -174,6 +175,8 @@ export class  ClashConfig {
   overwriteNetwork: boolean = true
   /** 覆写 Sniffer: 开启后应用 UI 的 sniffer 配置(与 overrideDns 同模式) */
   overrideSniffer: boolean = false
+  /** 本地默认值迁移版本，不属于 mihomo 配置。 */
+  snifferDefaultsVersion: number = SNIFFER_DEFAULTS_VERSION
   snifferDefault?: SnifferDefault = new SnifferDefault()
   "route-address": string[]
   constructor(ua: string = "clash-verge/v2.5.1") {
@@ -322,7 +325,9 @@ export class SnifferDefault {
       'override-destination': true
     },
     "TLS": {
-      ports: ["443", "8443"]
+      ports: ["443", "8443"],
+      // 用 SNI 恢复域名，避免浏览器继续使用 VPN 启动前缓存的错误 IP。
+      'override-destination': true
     },
     "QUIC": {
       ports: ["443", "8443"]

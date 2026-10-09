@@ -63,9 +63,109 @@ const lifecycleModule = load('proxy_core/src/main/ets/rpc/VpnLifecycleState.ets'
 const activationModule = load('entry/src/main/ets/common/services/ConfigActivationService.ets');
 const coreMode = load('entry/src/main/ets/common/services/CoreMode.ts');
 const delayResult = load('entry/src/main/ets/common/entity/DelayResult.ts');
+const clashConfigModel = load('proxy_core/src/main/ets/models/ClashConfig.ts', {
+  './Common': { LogLevel: { Info: 'info' }, ProxyMode: { Rule: 'rule' } }
+});
+const snifferMigration = load('proxy_core/src/main/ets/models/SnifferMigration.ts', { './ClashConfig': clashConfigModel });
+const legacySniffer = () => JSON.parse(fs.readFileSync(path.join(root, 'tests/fixtures/legacy-sniffer.json'), 'utf8'));
+const legacyClashConfig = () => ({ sniffer: legacySniffer(), snifferDefault: legacySniffer(), mode: 'global',
+  tun: { stack: 'Mixed', mtu: 1400 }, hosts: { 'local.test': '192.0.2.1' }, overrideDns: false });
 const flush = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
 const deferred = () => { let resolve; const promise = new Promise(r => resolve = r); return { promise, resolve }; };
 const nodeOf = uri => yaml.parse(YamlUtils.convertUniversalToClashYaml(uri)).proxies[0];
+
+test('Fresh sniffer defaults correct TLS destinations while retaining HTTP, QUIC and exclusions', () => {
+  const config = new clashConfigModel.ClashConfig();
+  const expected = legacySniffer();
+  expected.sniff.TLS['override-destination'] = true;
+  assert.deepEqual(JSON.parse(JSON.stringify(config.sniffer)), expected);
+  assert.equal(config.snifferDefaultsVersion, 1);
+  assert.equal(config.sniffer.sniff.QUIC['override-destination'] ?? config.sniffer['override-destination'], false);
+});
+
+test('Persisted v0 defaults migrate once without changing routing, DNS, hosts or customizations', () => {
+  const config = legacyClashConfig();
+  // JSON property order is not user customization.
+  config.sniffer = Object.fromEntries(Object.entries(config.sniffer).reverse());
+  config.sniffer.sniff = Object.fromEntries(Object.entries(config.sniffer.sniff).reverse());
+  const before = JSON.parse(JSON.stringify(config));
+  assert.equal(snifferMigration.migrateSnifferConfig(config), config);
+  assert.equal(config.sniffer.sniff.TLS['override-destination'], true);
+  assert.equal(config.snifferDefault.sniff.TLS['override-destination'], true);
+  for (const k of ['mode', 'tun', 'hosts', 'overrideDns']) assert.deepEqual(config[k], before[k]);
+  config.sniffer.sniff.TLS['override-destination'] = false;
+  const userEdit = JSON.stringify(config);
+  snifferMigration.migrateSnifferConfig(config);
+  assert.equal(JSON.stringify(config), userEdit, 'explicit opt-out after migration survives another load');
+});
+
+test('Sniffer migration preserves disabled, explicit, custom, empty and future settings', () => {
+  const changes = [
+    c => { c.sniffer.enable = false; },
+    c => { c.sniffer.sniff.TLS['override-destination'] = false; },
+    c => { c.sniffer.sniff.TLS['override-destination'] = true; },
+    c => { c.sniffer['override-destination'] = true; },
+    c => { c.sniffer['skip-domain'].push('private.example'); },
+    c => { c.sniffer.sniff.TLS.ports = ['9443']; },
+    c => { c.sniffer['custom-field'] = true; },
+    c => { c.sniffer = {}; },
+    c => { c.snifferDefaultsVersion = 99; }
+  ];
+  for (const change of changes) {
+    const config = legacyClashConfig(); change(config);
+    const original = JSON.parse(JSON.stringify(config.sniffer));
+    snifferMigration.migrateSnifferConfig(config);
+    assert.deepEqual(JSON.parse(JSON.stringify(config.sniffer)), original);
+    assert.ok(config.snifferDefaultsVersion >= 1);
+  }
+});
+
+test('Missing legacy sniffer falls back to updated defaults but keeps a customized fallback', () => {
+  for (const template of [undefined, legacySniffer(), { enable: false }]) {
+    const config = { snifferDefault: template };
+    snifferMigration.migrateSnifferConfig(config);
+    if (template?.enable === false) assert.equal(config.sniffer.enable, false);
+    else assert.equal(config.sniffer.sniff.TLS['override-destination'], true);
+    assert.equal(config.snifferDefaultsVersion, 1);
+  }
+});
+
+test('Card-only startup persists migrated sniffer settings and respects subsequent edits', () => {
+  const { cardManager } = load('entry/src/main/ets/common/utils/CardManageUtil.ets', {
+    'proxy_core': { ...clashConfigModel, ...snifferMigration }
+  });
+  let saved = legacyClashConfig(), writes = 0;
+  cardManager.store = {
+    getSync: () => JSON.parse(JSON.stringify(saved)),
+    putSync: (_, v) => { saved = JSON.parse(JSON.stringify(v)); writes++; }, flushSync() {}
+  };
+  assert.equal(cardManager.getClashConfig().sniffer.sniff.TLS['override-destination'], true);
+  assert.equal(saved.snifferDefaultsVersion, 1);
+  cardManager.getClashConfig();
+  assert.equal(writes, 1, 'read should persist only when a migration is needed');
+  saved.sniffer.sniff.TLS['override-destination'] = false;
+  cardManager.setClashConfig(saved);
+  assert.equal(cardManager.getClashConfig().sniffer.sniff.TLS['override-destination'], false);
+  cardManager.setClashConfig(legacyClashConfig());
+  assert.equal(saved.sniffer.sniff.TLS['override-destination'], true);
+});
+
+test('Activation sends migrated TLS policy for both UI and card settings without rewriting profile YAML', async () => {
+  for (const fromCard of [false, true]) {
+    const config = legacyClashConfig();
+    const source = 'mode: rule\nsniffer:\n  enable: false\nrules: [MATCH,DIRECT]\n';
+    const storage = new Map([['appConfig', { testUrl: 'https://example.com/' }]]);
+    if (!fromCard) storage.set('clashConfig', config);
+    const f = viewModelFixture({ storage, cardClashConfig: fromCard ? config : undefined, profileSource: source });
+    f.service.profileRepo.query = async () => ({ name: 'profile', type: 0,
+      loadContext() {}, getSelectedMap: () => ({ GLOBAL: 'keep-node' }) });
+    const snapshot = await f.service.prepareActivation('profile-id', false, false, () => false);
+    assert.equal(snapshot.payload.config.sniffer.sniff.TLS['override-destination'], true);
+    assert.equal(snapshot.payload.source, source);
+    assert.deepEqual(snapshot.payload.params['selected-map'], { GLOBAL: 'keep-node' });
+    assert.equal(snapshot.payload.config.mode, 'global');
+  }
+});
 
 test('RPC generated definitions are current and retain the published method IDs', () => {
   require('node:child_process').execFileSync(process.execPath, ['scripts/generate-rpc.cjs', '--check'], { cwd: root });
@@ -703,7 +803,10 @@ function viewModelFixture(options = {}) {
     'proxy_core/src/main/ets/rpc/RpcContract.generated': rpcGenerated,
     'proxy_core/src/main/ets/rpc/VpnLifecycleState': lifecycleModule,
     'proxy_core/src/main/ets/ProfileRepo': { ProfileRepo: class {} },
-    'proxy_core': { ProfileType: { File: 0, Url: 1 }, ProxySort: { Delay: 'Delay' }, SocketProxyService: class {}, SocketStubService: class {
+    'proxy_core/src/main/ets/profile/ProfileStorage': { ProfileStorage: class {
+      async transaction(action) { return action({ read: async () => options.profileSource }); }
+    } },
+    'proxy_core': { ...clashConfigModel, ...snifferMigration, ProfileType: { File: 0, Url: 1 }, ProxySort: { Delay: 'Delay' }, SocketProxyService: class {}, SocketStubService: class {
       constructor(context, observer, allowVpn) { calls.push(['localCore', context.applicationInfo.name, allowVpn]); }
       async startService(id) { calls.push('startLocalCore'); if (options.localGate) await options.localGate.promise; }
       async lockVpn() {}
@@ -720,10 +823,11 @@ function viewModelFixture(options = {}) {
     '../common/utils/HHmmssTimer': { Timer: class { reset() { calls.push('resetTimer'); } start() { calls.push('timer'); } } },
     '../common/EventHub': { EventHub: { sendEvent: (e, value) => { events.push(e); if (e === 'delay') delayEvents.push(value); } },
       EventKey: { StartedClash: 'started', StopedClash: 'stopped', TestDelay: 'delay', FetchProxyGroup: 'groups' } },
-    '../common/utils/CardManageUtil': { cardManager: { pushCartProxyMode: state => calls.push(state ? 'runningCard' : 'stoppedCard'), pushCartVpnState: state => calls.push(state.running ? 'runningCard' : 'stoppedCard'), pushCartVpnServiceTime() {} } },
+    '../common/utils/CardManageUtil': { cardManager: { getClashConfig: () => options.cardClashConfig,
+      pushCartProxyMode: state => calls.push(state ? 'runningCard' : 'stoppedCard'), pushCartVpnState: state => calls.push(state.running ? 'runningCard' : 'stoppedCard'), pushCartVpnServiceTime() {} } },
     '../common/utils/VpnNoticeConfigSync': { syncVpnNoticePrefs: async () => {} },
     '@kit.PerformanceAnalysisKit': { hilog: quiet }
-  }, { AppStorage: { setOrCreate() {}, get: () => options.appConfig ?? ({ clashCore: options.core ?? 0 }) },
+  }, { AppStorage: { setOrCreate() {}, get: k => options.storage ? options.storage.get(k) : options.appConfig ?? ({ clashCore: options.core ?? 0 }) },
     $r: (key, ...params) => ({ key, params }), ...(options.time || {}) });
   ClashViewModel.promptAction = { showToast: message => messages.push(message) };
   const service = new ClashViewModel(); service.loadConfig = async () => calls.push('loadConfig');
@@ -1162,10 +1266,10 @@ test('Loading persisted settings normalizes Release core mode without losing the
   const method = sourceMethod(file, 'AppState', 'init');
   for (const debug of [false, true]) {
     const config = { clashCore: 1, currentProfileId: 'keep-profile', currentProxyName: 'keep-node' };
-    const store = new Map([['appConfig', config]]);
+    const store = new Map([['appConfig', config], ['clashConfig', legacyClashConfig()]]);
     const { AppState } = load('AppStateInitFixture.ts', {}, {
       BuildProfile: { DEBUG: debug }, resolveCoreMode: coreMode.resolveCoreMode,
-      AppConfig: class {}, ClashConfig: class {}, UIConfig: class {}, AppFlowingState: class {},
+      ...clashConfigModel, ...snifferMigration, AppConfig: class {}, UIConfig: class {}, AppFlowingState: class {},
       AppStorage: { get: k => store.get(k), set: (k, v) => store.set(k, v), setOrCreate: (k, v) => store.set(k, v) },
       PersistentStorage: { persistProp: (k, v) => { if (!store.has(k)) store.set(k, v); } }
     }, `export class AppState { static getAppProvisionType() {} ${method} }`);
@@ -1173,15 +1277,18 @@ test('Loading persisted settings normalizes Release core mode without losing the
     assert.equal(store.get('appConfig').clashCore, debug ? 1 : 0);
     assert.equal(store.get('appConfig').currentProfileId, 'keep-profile');
     assert.equal(store.get('appConfig').currentProxyName, 'keep-node');
+    assert.equal(store.get('clashConfig').sniffer.sniff.TLS['override-destination'], true);
+    assert.equal(store.get('clashConfig').snifferDefaultsVersion, 1);
   }
 });
 
 test('Backup restore applies the build core policy for both file and supplied backup inputs', async () => {
   for (const debug of [false, true]) for (const fileInput of [false, true]) {
-    const config = { appConfig: { clashCore: 1, currentProfileId: 'profile' }, uiConfig: {}, clashConfig: {}, configList: [], configSort: '[]' };
+    const config = { appConfig: { clashCore: 1, currentProfileId: 'profile' }, uiConfig: {}, clashConfig: legacyClashConfig(), configList: [], configSort: '[]' };
     const stored = new Map(), restored = [];
     const mod = load('entry/src/main/ets/common/utils/BackupRestoreUtil.ets', {
       'BuildProfile': { default: { DEBUG: debug } }, '../services/CoreMode': coreMode,
+      'proxy_core': { ...clashConfigModel, ...snifferMigration },
       '../entity/utils': { getJsonArrayType: () => 'string' },
       '../../entryability/ClashViewModel': { default: { addOrUpdateProfiles: async list => restored.push(list) } },
       'xb_components': {
@@ -1192,6 +1299,7 @@ test('Backup restore applies the build core policy for both file and supplied ba
     await mod.default.restore(fileInput ? null : config); await flush();
     assert.equal(stored.get('appConfig').clashCore, debug ? 1 : 0);
     assert.equal(stored.get('appConfig').currentProfileId, 'profile');
+    assert.equal(stored.get('clashConfig').sniffer.sniff.TLS['override-destination'], true);
     assert.equal(restored.length, 1);
   }
 });

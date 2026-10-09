@@ -3,7 +3,7 @@ import { vpnStateLabel } from 'proxy_core/src/main/ets/rpc/VpnLifecycleState';
 import { Context } from '@kit.AbilityKit'
 import { preferences } from '@kit.ArkData'
 import { formBindingData, formProvider } from '@kit.FormKit';
-import { ClashConfig, IpInfo, Profile } from 'proxy_core';
+import { ClashConfig, IpInfo, Profile, migrateSnifferConfig } from 'proxy_core';
 import { AppConfig } from '../../entryability/AppState';
 import BuildProfile from 'BuildProfile';
 import { resolveCoreMode } from '../services/CoreMode';
@@ -213,7 +213,11 @@ class CardManager {
   /** @description 获取Clash配置 */
   getClashConfig() {
     if (this.store) {
-      return this.store.getSync(this.clashConfigKey, new ClashConfig()) as ClashConfig
+      const config = this.store.getSync(this.clashConfigKey, new ClashConfig()) as ClashConfig
+      const previousVersion = config.snifferDefaultsVersion
+      migrateSnifferConfig(config)
+      if (previousVersion !== config.snifferDefaultsVersion) this.setClashConfig(config)
+      return config
     }
     return null
   }
@@ -221,8 +225,7 @@ class CardManager {
   /** @description 存储Clash配置 */
   setClashConfig(clashConfig: ClashConfig) {
     if (this.store) {
-      let newConfig = new ClashConfig()
-      newConfig = clashConfig
+      const newConfig = migrateSnifferConfig(clashConfig)
       this.store.putSync(this.clashConfigKey, newConfig)
       this.store.flushSync()
     }

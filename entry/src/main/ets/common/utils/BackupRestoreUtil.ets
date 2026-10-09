@@ -1,4 +1,4 @@
-import { ClashConfig, Profile } from "proxy_core";
+import { ClashConfig, Profile, migrateSnifferConfig } from "proxy_core";
 import { Xb_FileUtils, Xb_GetResourceString, Xb_PreferenceUtil, Xb_ToastUtil } from "xb_components";
 import { AppConfig, UIConfig } from "../../entryability/AppState";
 import ClashViewModel from "../../entryability/ClashViewModel";
@@ -65,7 +65,7 @@ class BackupRestoreUtil {
               console.log(`旧版本数据转化为：${config.uiConfig.isShowHomeCard}`)
             }
             AppStorage.set("uiConfig",  config.uiConfig)
-            AppStorage.set("clashConfig", config.clashConfig)
+            AppStorage.set("clashConfig", migrateSnifferConfig(config.clashConfig))
             console.info(`ClashBoxConfig.restore 配置列表：${JSON.stringify(config.configList)}`)
             try {
               await ClashViewModel.addOrUpdateProfiles(config.configList)
@@ -103,7 +103,7 @@ class BackupRestoreUtil {
         console.log(`旧版本数据转化为：${config.uiConfig.isShowHomeCard}`)
       }
       AppStorage.set("uiConfig",  config.uiConfig)
-      AppStorage.set("clashConfig", config.clashConfig)
+      AppStorage.set("clashConfig", migrateSnifferConfig(config.clashConfig))
       console.info(`ClashBoxConfig.restore 配置列表：${JSON.stringify(config.configList)}`)
       ClashViewModel.addOrUpdateProfiles(config.configList).then(() => {
         Xb_ToastUtil.showToast({ message: $r('app.string.import_success') })

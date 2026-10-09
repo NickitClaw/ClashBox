@@ -3,6 +3,7 @@
   "private": true,
   "scripts": {
     "test": "node --test tests/regression.cjs",
+    "test:sniffer": "node scripts/test-sniffer.cjs",
     "check:rpc": "node scripts/generate-rpc.cjs --check",
     "check:native": "node scripts/native-provenance.cjs --check arm64-v8a",
     "check": "node scripts/check.cjs"

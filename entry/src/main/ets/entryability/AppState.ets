@@ -1,4 +1,4 @@
-import { ClashConfig,  IpInfo, ProxyGroup, ProxyMode, ProxySort, SnifferDefault, Traffic, } from "proxy_core";
+import { ClashConfig,  IpInfo, ProxyGroup, ProxyMode, ProxySort, SnifferDefault, Traffic, migrateSnifferConfig } from "proxy_core";
 import { ANIMATION_DURATION_300, showHomeCard } from "../common/entity/Constants";
 import { ProxyItem } from "../common/datasources/ProxyData";
 import { resourcesBlankData, theResourcesData } from "../components/More/Resources";
@@ -202,6 +202,8 @@ export class AppState {
     PersistentStorage.persistProp("favoriteProxys", new Map<string, string[][]>([]))
 
     PersistentStorage.persistProp("clashConfig", new ClashConfig(AppState.globalUA))
+    const clashConfig = AppStorage.get<ClashConfig>('clashConfig')
+    if (clashConfig) AppStorage.set('clashConfig', migrateSnifferConfig(clashConfig))
     PersistentStorage.persistProp("uiConfig", new UIConfig())
     AppStorage.setOrCreate<AppFlowingState>("appFlowingState", new AppFlowingState())
     // 获取打包类型

@@ -5,7 +5,7 @@ import { ProfileStorage } from 'proxy_core/src/main/ets/profile/ProfileStorage';
 import { assertNativeCompatibility } from 'proxy_core/src/main/ets/rpc/NativeCompatibility';
 import { ProfileRepo } from "proxy_core/src/main/ets/ProfileRepo";
 import { Context, Want } from "@kit.AbilityKit";
-import { SocketProxyService, SocketStubService, Profile, ProfileType, UpdateConfigParams, ClashConfig, getHome,
+import { SocketProxyService, SocketStubService, Profile, ProfileType, UpdateConfigParams, ClashConfig, migrateSnifferConfig, getHome,
   LogInfo,
   Provider,
   ProxyMode,
@@ -648,7 +648,8 @@ export class ClashViewModel {
     cancelled: () => boolean): Promise<ConfigSnapshot> {
     const profile = await this.profileRepo.query(id);
     if (!profile) throw new Error('配置不存在或已被删除');
-    const config = AppStorage.get<ClashConfig>('clashConfig') || cardManager.getClashConfig() || new ClashConfig();
+    const config = migrateSnifferConfig(
+      AppStorage.get<ClashConfig>('clashConfig') || cardManager.getClashConfig() || new ClashConfig());
     profile.loadContext(this.context, config['global-ua']);
     profile.shouldCancelUpdate = cancelled;
     if (update && profile.type === ProfileType.Url && !profile.isUpdating) {

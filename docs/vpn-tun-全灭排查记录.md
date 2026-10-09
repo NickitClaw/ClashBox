@@ -8,6 +8,8 @@
 
 > 2026-10-09 晚间复测：用户报告出境易 Chrome 无法访问外网，现场随后在该 Chrome 与原生浏览器均成功加载 Google。另复现批量测速 IPC 提前关闭报错和未测节点误标 timeout；修复及待测范围见 §11，尚不能将它归因为浏览器断网原因。
 
+> 2026-10-09 22:31–22:37 受控复现：Chrome 在 VPN 关闭时取得 `m.youtube.com` 的错误 DNS 结果，VPN 恢复后仍命中该缓存并连接错误 IP，TLS 报 `ERR_CONNECTION_CLOSED`。保持同一节点和 VPN 会话，仅清除 Chrome DNS 缓存后获得 Fake-IP、TLS 1.3 握手成功、首页返回 HTTP 200。Chrome NetLog 与核心日志闭合了这一次失败/恢复的证据链，详见 §13；最初用户故障的触发操作仍不确定。
+
 ## 0. 故障时的 TUN 协议栈：Mixed（默认）
 
 **运行栈 = 覆写配置里的 `TunStack` 值，默认 `Mixed`**（`proxy_core/src/main/ets/models/ClashConfig.ts:191`，UI 选项在 `Constants.ets:545-547`），wrapper 经 `common.go:246`（`targetConfig.Tun.Stack = patchConfig.Tun.Stack`）透传给内核。排查期间该设置未改动，故故障时栈为 Mixed：
@@ -418,3 +420,112 @@ Release 同时在持久化设置加载、备份恢复、卡片配置读取/保�
 - Chrome 与原生浏览器分别在刷新前后、测速前后、后台和锁屏后访问新页面；如再失败，同一窗口收集目标、模式、实际命中组、核心错误与页面结果，不以测速 timeout 直接推断断网。
 
 脱敏后的结论记录于此；原始布局、系统日志及配置快照仅保存在 Git 忽略的 `.research/regression-*`，不提交订阅凭据或完整浏览数据。
+
+## 12. 2026-10-09 21:53–22:05：Chrome 的 m.youtube.com 间歇性失败
+
+用户再次反馈出境易 Chrome 无法打开 `m.youtube.com`。本轮真机仍为 §11 的现有签名包，版本 1.7.4 / 1007047，安装更新时间未变；刚推送的 `ab6c8de6` IPC 修复尚未安装。因此，本轮故障与恢复都不能用于判断该新修复的效果。
+
+### 12.1 对照结果
+
+- 21:53，Chrome 原页面明确显示 `ERR_CONNECTION_CLOSED`，刷新仍失败；后续也观察到 `ERR_CONNECTION_ABORTED`。
+- 当前规则模式实际使用 PROXY 的“香港04”节点，与 §11 的“香港03”不同；本轮排查未切换节点或 VPN 设置。
+- 21:54，同一核心的 mixed HTTP 代理端口访问 `m.youtube.com` 返回 302（跳转桌面版），`www.youtube.com` 返回 HTTP 200 / 948173 字节，Google 返回 HTTP 200。此对照绕过 TUN，只证明核心出站当时可用。
+- 同一时间手机原生浏览器打开 `m.youtube.com`，出现 YouTube 首页、搜索及 Shorts 导航；日志记录 `172.19.0.1` 到 `m.youtube.com:443` 经 PROXY 转发，证明原生浏览器的 TUN HTTPS 路径可用。
+- 22:01，在 Chrome 新建标签页、输入完整 `https://m.youtube.com/` 并打开，成功加载首页。对应日志在 22:01:31 记录 `m.youtube.com:443`，随后出现图片和 Google Video 域名的代理连接。
+- 返回原来失败的标签页后也恢复加载。结束时保留原标签页的正常 YouTube 首页，关闭本轮创建的额外标签页；VPN 保持开启。未改程序、节点、分流规则、DNS、QUIC 设置，也未清除浏览缓存或登录数据。
+
+### 12.2 结论与证据限制
+
+本次确实复现了 Chrome 失败，但在无需修改 VPN 配置的情况下恢复。原生浏览器与代理端口成功的对照，不支持“当时节点完全不可用”或“TUN 全面断网”的解释。**截至本轮结束，尚未确定 Chrome 最初失败的根因，不据此修改 TUN 或禁用 QUIC。** 后续受控复现已确认一种导致同样错误的 DNS 缓存机制，见 §13。本轮只确认页面加载，未以人工播放验证完整视频流。
+
+失败窗口附近核心日志出现纯 IP 目标（例如 `157.240.7.20`），成功窗口出现 `m.youtube.com` 域名。旧 DNS 缓存或旧连接状态是待查方向；缺少 Chrome 请求与这些 IP 的对应证据，不能直接认定 YouTube 被解析到该 IP，也不能断言新标签页本身解决了问题，期间还可能有缓存自然过期。
+
+Chrome 的 `chrome://net-export` 已开启一次默认“Strip private information”采集并停止，记录保存在手机 Chrome 自有目录；该次采集期间新请求已经恢复，当时尚未取回日志，不称其为已捕获故障请求的 Chrome 证据。后续已通过本地导出取回，确认其记录了恢复阶段的 Fake-IP 请求，见 §13。HDC 到 Chrome 调试 socket 的连接被重置，未建立 DevTools 会话。临时端口转发和主机 hilog 抓取均已停止。
+
+现场证据仅保存在忽略目录 `.research/youtube-*`：initial / after-reload / chrome-current 布局记录错误，native / recorded-result / oldtab-result / final 布局记录恢复，live-core.log 记录对应时间线。再次复现时，应在失败仍持续的窗口取得 Chrome NetLog，将目标域名、解析地址、连接错误与核心日志对应，再分别对照重新导航、临时 DNS/连接缓存清理的影响；避免在取得证据前同时切节点、重启 VPN、清缓存。
+
+## 13. 2026-10-09 22:31–22:37：确认错误 DNS 缓存在 VPN 恢复后继续被使用
+
+### 13.1 条件和采集方法
+
+真机仍运行 §11–§12 的现有签名 Debug 包，未安装 `ab6c8de6` 的 IPC 修复。受控实验开始时现场已为普通 mihomo、GLOBAL、“香港02-会员专享”、Mixed、MTU 1400，应用访问控制关闭；这是本轮固定条件，不能与 §12 的 RULE / 香港04 混为一组对照。Chrome 版本为 150.0.7871.186，运行于出境易容器内。
+
+通过 Chrome `chrome://net-export` 采集默认脱敏 NetLog，停止后使用系统“另存为”导出至手机本地 Download 目录，再经 HDC 取回；没有发送邮件或上传日志。同步采集 `flclashGo` 和应用日志，以 NetLog 的时间偏移换算为 Asia/Shanghai，与核心日志对齐。默认脱敏文件仍可能含 URL、请求头等浏览信息，原始文件只保存在 Git 忽略的 `.research/`，本文仅保留必要的事件和地址。
+
+前两轮用于确认现象和调整采集：VPN 关闭时 DNS 诊断页曾得到 `31.13.92.37`，但诊断页的缓存不能代替页面实际使用的缓存；第一次仅凭诊断页复现不构成闭环。第三轮在 VPN 关闭时清理 Chrome DNS 缓存并实际访问目标页面，取得以下完整证据。
+
+### 13.2 失败与恢复的成对时间线
+
+以下时间均为 2026-10-09，Asia/Shanghai。最后一次 VPN 启动为 22:32:20，之后直至 DNS 清理和页面恢复没有再重启 VPN、换节点或改配置。
+
+| 时间 | Chrome NetLog / 页面 | 同窗口核心证据与解释 |
+|---|---|---|
+| 22:31:57 | 实验主动关闭 VPN | 为生成 VPN 未接管时的 DNS 缓存建立受控条件，不代表用户最初也做过该操作 |
+| 22:32:02.663 | `m.youtube.com` 的 DNS 任务提取到 `104.244.42.197` | 本轮错误目标的来源是浏览器解析结果，不再仅根据核心纯 IP 日志猜测域名 |
+| 22:32:20 | VPN 恢复，保持 GLOBAL / 香港02 | 随后的页面失败发生在 VPN 已恢复的窗口 |
+| 22:32:38.205–22:32:47.032 | TCP 连接目标 `104.244.42.197:443`，TLS 握手报 `-100 / ERR_CONNECTION_CLOSED` | 22:32:39.335 核心记录 `172.19.0.1:60298 --> 104.244.42.197:443 using GLOBAL`，浏览器请求进入 TUN 并被转发到旧 IP |
+| 22:32:47.038–22:33:13.786 | 多次 `HOST_RESOLVER_MANAGER_CACHE_HIT` 命中同一 IP，重复 TLS `ERR_CONNECTION_CLOSED`；22:32:57 的新页面请求仍如此 | 核心对应记录同一目标的多次 GLOBAL TCP 连接；刷新页面和恢复 VPN 没有使该缓存失效 |
+| 22:35:45.862 | 恢复实验的新 NetLog 仍记录缓存命中 `104.244.42.197`，页面保持失败 | 22:35:45.932 核心仍向该 IP 转发，故恢复对照确实从失败状态开始 |
+| 22:36:13.135 | 只点击 `chrome://net-internals/#dns` 的 **Clear host cache** 并重新访问后，DNS 返回 `198.18.0.88` | 获得当前核心的 Fake-IP，22:36:13.232 核心目标恢复为 `m.youtube.com:443 using GLOBAL` |
+| 22:36:13.575–22:36:13.974 | TLS 1.3 握手成功；首页请求（source 13154）收到 **HTTP 200**，手机显示 YouTube 首页 | 同一 VPN 会话、同一节点恢复；本轮未清登录数据、网页缓存或 socket pool，也未禁用 QUIC |
+
+失败 NetLog 中该域名的缓存项 TTL 为 `599999 ms`（约 10 分钟），缓存分区为 `https://youtube.com same_site`。这解释了 VPN 恢复后持续使用旧结果的机制，但不表示每次故障必然持续 10 分钟。日志中的 DNS 配置为局域网解析器 `192.168.31.1:53`，DoH 服务器列表为空、DoT 未启用；未抓取解析器上游报文，不能进一步断言错误答案由路由器、运营商或其他具体设备产生。
+
+结论是：**本次复现由 VPN 未接管时取得的错误 DNS 答案被 Chrome 缓存，VPN 恢复后浏览器继续按错误 IP 发起 TLS；仅清除该 DNS 缓存即可恢复。** 已有实际请求、缓存命中、TUN 目标、TLS 错误以及 DNS 单变量恢复证据，不再只是“旧 DNS 可能有影响”的假设。错误在 TCP/TLS 路径复现，没有据此禁用 QUIC 的理由。
+
+### 13.3 代码为什么没有纠正旧目标
+
+修复前（`ab6c8de6`）的默认嗅探配置见 `proxy_core/src/main/ets/models/ClashConfig.ts` 的 `SnifferDefault`：
+
+- `enable`、`force-dns-mapping`、`parse-pure-ip` 为 true，但全局 `override-destination` 为 **false**。
+- HTTP 单独设置 `override-destination: true`；TLS / QUIC 仅设置端口 443、8443，因此继承全局 false。
+- `core/config/config.go` 的 `parseSniffer()` 先取全局值，仅在协议显式设置时覆盖。
+- `core/component/sniffer/dispatcher.go` 的 `replaceDomain()` 无论是否覆盖都会设置 `metadata.SniffHost`，但只有 `overrideDest=true` 才设置 `metadata.Host` 并清空 `metadata.DstIP`。
+
+因此，即使 TLS 嗅探成功，默认行为也不会将已缓存的错误 IP 改回域名进行出站连接。GLOBAL 只改变代理选择，不能自行修正目标地址。现场纯 IP 日志不能证明嗅探未启用；本轮没有嗅探内部事件，也没有取得安装包全部源码的精确对应，以上是当前源码的明确行为及修复方向，不冒充已完成的嗅探插桩或新包验证。
+
+本轮诊断提出的修复方向是 TLS 嗅探后覆盖目标，并处理已有持久化配置、用户显式配置与需要跳过的域名；后续实现和本地验证见 §14。仍应使用同样的“VPN 关闭时形成错误缓存 → 开启 VPN 后访问”的真机对照验证效果，另测正常域名、DIRECT、规则模式、无可用 SNI 或不可嗅探流量，避免把配置改动视为无条件有效。
+
+### 13.4 结论边界、现场恢复与证据位置
+
+用户对最初失败前是否提前打开 Chrome 或切过节点回答“没有上述操作／不确定”。所以本次受控复现确认了具体故障机制，**不能反推用户最初的操作顺序，也不将 21:53 未捕获的原始请求或之前所有断网都追认为这一原因**。视频完整播放仍未独立验证。
+
+本轮只进行了真机诊断和文档更新，没有修改程序代码或安装新包。结束时保留开启的 VPN、GLOBAL / 香港02；Chrome 原标签页已恢复 YouTube 首页，关闭额外测试标签页，停止 NetLog 和主机日志采集，移除调试端口转发及本次创建的公共导出/临时文件。
+
+原始证据仅保存在本机 Git 忽略目录：
+
+- `.research/rootcause-chrome-netlog-round3.json`：失败轮次，含解析、缓存命中、TCP 和 TLS 错误；对应 `.sanitized.json` 仅保留诊断字段。
+- `.research/rootcause-chrome-netlog-recovery.json`：清理 DNS 前仍失败、清理后取得 Fake-IP 和 HTTP 200；对应 `.sanitized.json` 记录同一时间线。
+- `.research/rootcause-live-core.log`、`rootcause-live-app.log`：VPN 启停、目标 IP 和恢复后的域名转发。
+- `.research/rootcause-on3-error-final.jpeg`、`rootcause-after-clear.jpeg`：VPN 开启时 Chrome 报错及仅清理 DNS 后恢复的页面。
+- `.research/rootcause-chrome-netlog-old.json`：§12 采集的旧日志，仅覆盖此前已恢复的请求，不作为本轮失败证据。
+
+## 14. TLS 目标纠正与旧默认配置迁移
+
+### 14.1 实现
+
+`SnifferDefault.sniff.TLS` 显式设置 `override-destination: true`，适用端口仍为 443 / 8443。嗅探到可用 SNI 后，现有核心会恢复目标域名并清空旧 IP，解决 §13 中浏览器沿用错误 DNS 缓存的路径。全局覆盖值、HTTP、QUIC、源/目标地址及域名排除项均保留原行为，没有修改 Go 核心、IPC 或 TUN 实现。
+
+新增 `models/SnifferMigration.ts`，用固定的旧版默认配置指纹识别可迁移设置；比较不依赖 JSON 对象属性顺序。仅与旧默认值完全一致的嗅探配置自动升级，禁用嗅探、显式 TLS 覆盖、不同端口/排除项或额外字段均保留。没有嗅探配置时补齐默认值，保留自定义的 `snifferDefault` 回退；同步更新旧的默认模板，防止兼容模式页面重新使用旧值。
+
+`snifferDefaultsVersion=1` 标记完成迁移，新建配置直接带版本号，迁移后用户关闭 TLS 覆盖不会在下一次加载时被重新打开。入口覆盖 AppState 持久化加载、文件/对象两种备份恢复、卡片配置读写和激活快照准备。路由模式、节点选择、DNS、hosts 和原始订阅 YAML 不由此迁移改写。
+
+旧版没有保存编辑历史，无法区分“未修改默认值”和“用户显式保存了一份完全相同的默认配置”，两者都会迁移。自定义配置保持原样时，如需启用纠正，可在“覆写 → 网络 → 兼容模式 → Sniff”的 TLS 项显式设置 `override-destination: true`；需要关闭则设为 false，并应用覆写配置。协议项优先于全局 `Override Destination`。
+
+### 14.2 本地验证结果
+
+- `npm run check` 通过：106 项逻辑回归、Go 帧/契约竞态测试、RPC 生成一致性和原生库 provenance 检查。逻辑回归覆盖新默认值、属性顺序变化、迁移幂等、自定义/禁用/显式覆盖保护、未来版本保留、模板回退、持久化加载、两种备份恢复、卡片读写和配置激活载荷。
+- `npm run test:sniffer` 通过，带 Go `-race`：实际 ArkTS 默认值及迁移结果经固定版本 mihomo 的配置解析器和 TCP 嗅探器运行；真实 TLS ClientHello 在旧配置下保留 `104.244.42.197`，在新配置/迁移配置下恢复 `m.youtube.com` 并清空旧 IP。10 个场景还覆盖 8443、显式关闭、跳过域名/源地址/目标地址、未配置端口和无 SNI；逐项确认请求字节未被嗅探消费或改写。测试只使用进程内连接，不访问 YouTube，也不等同于完整 TLS 握手或真实出站成功。
+- Debug / Release 未签名 HAP 均构建成功；最终 Release HAP 的原生库及包内来源一致性检查通过。原生源码未变，本次无需重建 `.so`。
+
+原生集成入口为 `scripts/test-sniffer.cjs` 和 `tests/sniffer_destination_test.go`，需要已初始化的核心子模块及 Go 依赖，可使用 `GO_BIN` 指定宿主 Go；无需子模块的轻量 CI 仍执行 `npm run check`。本地日志保存在忽略目录 `.research/tls-*.log`。
+
+### 14.3 真机待测
+
+开始验证修复时 HDC 已无连接设备，用户确认暂时无法连接、先完成本地验证。本次未安装新包、未声称真机修复已通过；§13 的恢复证据来自旧包清除 DNS 缓存，不能替代以下新包验证。
+
+- [ ] 同次签名构建覆盖安装，保留旧默认配置，确认 TLS 项迁移成功且重复启动不会覆盖后续的显式关闭。
+- [ ] 固定 GLOBAL / 可用节点，在 VPN 关闭时形成错误域名缓存，开启 VPN 后**不清除 Chrome DNS 缓存**重新访问；关联 NetLog、核心嗅探/目标日志、HTTP 状态与页面，确认目标被纠正且页面成功。
+- [ ] 相同条件显式关闭 TLS 覆盖，确认旧错误缓存仍能复现失败；重新开启后用新连接验证恢复，避免将缓存自然过期误当成修复效果。
+- [ ] RULE / DIRECT、正常 HTTPS、原生浏览器、排除域名/地址、QUIC 与视频实际播放分别回归；无 SNI / 嗅探失败不能被视为已修复目标纠正。
+- [ ] 冷启动、桌面卡片启动、旧备份恢复和覆写配置应用后均核对有效 TLS 策略，自定义配置保持原值。
