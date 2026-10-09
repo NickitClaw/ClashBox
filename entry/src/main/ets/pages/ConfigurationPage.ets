@@ -90,6 +90,7 @@ struct ConfigurationPage {
   // 是否为新建配置
   @StorageLink('ConfigNew') isNewConfig: boolean = false
   @State isRefreshing: boolean = false
+  private refreshInProgress: boolean = false
   @State isShowMenu: boolean = false
   // 是否来自文件导入
   @State isFromFile: boolean = false
@@ -725,8 +726,7 @@ struct ConfigurationPage {
 
   async onIndexChange() {
     if (this.configList.length !== 0 && this.tabCurrentPage === 2) {
-      await ClashViewModel.updateProfileConfig(null)
-      Xb_ToastUtil.showToast({ message: '更新所有配置成功' })
+      await this.updateConfig()
     }
   }
 
@@ -761,6 +761,7 @@ struct ConfigurationPage {
   }
 
   async onConfigListChange() {
+    this.syncSelectedConfig()
     hilog.info(0xC011, componentName, `EditConfig #onConfigListChange#配置列表长度: [${this.configList.length}]`)
     if (!this.uiConfig.isFirstImportConfig || this.isClearData) {
       hilog.info(0xC011, componentName, `EditConfig #onConfigListChange#设置数据清除: [${this.isClearData}]`)
@@ -830,23 +831,26 @@ struct ConfigurationPage {
 
   /**更新配置*/
   private async updateConfig(configId?: string): Promise<void> {
-    Xb_ToastUtil.showToast({message: $r('app.string.updating_config')})
-    this.loadConfig(this.currentRadioConfigData, !this.currentRadioConfigData.disableUpdate)
-    if (configId) {
+    if (this.refreshInProgress) return
+    this.refreshInProgress = true
+    this.isRefreshing = true
+    this.isON.toggleAnim = true
+    try {
+      Xb_ToastUtil.showToast({ message: $r('app.string.updating_config') })
+      await ClashViewModel.refreshProfileConfig(configId ?? null)
+      this.syncSelectedConfig()
+      Xb_ToastUtil.showToast({ message: $r('app.string.updated_success_config') })
+    } catch (error) {
+      Xb_ToastUtil.showToast({ message: `${getResourceString($r('app.string.update_failed'), this)}: ${(error as Error).message || error}`, duration: 3000 })
+    } finally {
       this.isRefreshing = false
-      // 使开关点击时不触发转场动画
-      this.isON.toggleAnim = true
-      await ClashViewModel.updateProfileConfig(configId)
-      hilog.info(0xC012, componentName, `#updateConfig#更新配置{单个}: configUrl is [${this.currentTouchConfigData.configUrl}], configId is [${this.currentTouchConfigData.configId}]`)
-
-    } else {
-      // 使开关点击时不触发转场动画
-      this.isON.toggleAnim = true
-      hilog.info(0xC012, componentName, `#updateConfig#更新配置{所有}`)
-      await ClashViewModel.updateProfileConfig(null)
-      this.isRefreshing = false
-      Xb_ToastUtil.showToast({message: $r('app.string.updated_success_config')})
+      this.refreshInProgress = false
     }
+  }
+
+  private syncSelectedConfig(): void {
+    this.currentRadioConfigData = this.configList.find((data: ConfigData) =>
+      data.configId === this.appConfig.currentProfileId) ?? NewConfigData
   }
 
   /**分享配置的URL*/
@@ -1013,6 +1017,7 @@ struct ConfigurationPage {
    * @description 监听选中的配置项变化
    */
   async onChangeConfig() {
+    this.syncSelectedConfig()
     // 选中项变更重新监听分享
     try {
       Xb_Share.immersiveDisablingListening('all')

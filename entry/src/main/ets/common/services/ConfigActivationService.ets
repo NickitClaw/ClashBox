@@ -27,10 +27,14 @@ export class ConfigActivationService {
     return this.enqueue(() => this.run(id, update, false, generation));
   }
 
-  reload(patch: boolean): Promise<boolean> {
+  reload(patch: boolean, expectedId?: string): Promise<boolean> {
     const generation = this.generation;
     // Resolve selection inside the queue, after any pending successful switch.
-    return this.enqueue(() => this.run(this.host.selectedId(), false, patch, generation));
+    return this.enqueue(() => {
+      const id = this.host.selectedId();
+      if (expectedId !== undefined && id !== expectedId) return Promise.resolve(false);
+      return this.run(id, false, patch, generation);
+    });
   }
 
   private enqueue(work: () => Promise<boolean>): Promise<boolean> {

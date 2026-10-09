@@ -45,7 +45,6 @@ import { number2Time, timestampToDateTime } from '../common/utils/TimeConvertUti
 import { PXSecScreen } from './PXSecScreen'
 import { getResourceString } from '../common/utils/ResourceStringUtil'
 import { ConvertedUnit } from '../common/utils/DataUnitConvertUtils'
-import { WelcomeUserAgreement } from '../components/Start/WelcomePage'
 import { i18n } from '@kit.LocalizationKit'
 import {
   FloatTabBarHeight,
@@ -572,8 +571,6 @@ struct Index {
       ImportConfigFromURL({
         configData: this.currentTouchConfigData,
       })
-    } else if (this.uiConfig.isFirstStart) {
-      WelcomeUserAgreement()
     } else {
       // 版本更新后显示更新日志
       UpdateLog()
@@ -810,15 +807,6 @@ struct Index {
     if (this.widthBp > 1) {
       this.morePageInfos.pushPathByName('overwrite', null, false)
     }
-    // 启动时检查上一次是否崩溃
-    if (AppStorage.get<boolean>('crash') === true && !this.uiConfig.isFirstStart) {
-      hilog.info(0x1000, componentName, `进入崩溃日志`)
-      this.isShowWelcome = true
-    }
-    // 首次启动打开欢迎页
-    if (this.uiConfig.isFirstStart) {
-      this.isShowWelcome = true
-    }
     // 在页面build前改变主题颜色
     Xb_ChangeThemeColor(this.uiConfig.themeColor)
     hilog.info(0x1000, componentName, `#aboutToAppear#ThemeControl.setDefaultTheme(${this.uiConfig.themeColor})`)
@@ -887,16 +875,32 @@ struct Index {
     AppState.versionName = packageInfo.versionName
     console.error(`Update 历史应用版本：${this.uiConfig.oldVersionCode} 当前应用版本：${AppState.versionCode}`)
 
-    if (this.uiConfig.oldVersionCode !== AppState.versionCode) {
-      this.isEnableIndexForegroundBlur = true
-      this.isShowWelcome = true
-      this.updateData()   // TODO 强制更新数据函数
-    }
+    this.completeStartup(AppState.versionCode)
 
     Xb_AnimationStyle.setContext(this.UIContext)
     if (this.apiVersionEnable) {
       // 需要确保兼容最低API版本(17)
       holdingHandleUtil.setContext(this.UIContext)
+    }
+  }
+
+  private completeStartup(versionCode: number): void {
+    const firstStart = this.uiConfig.isFirstStart
+    const versionChanged = this.uiConfig.oldVersionCode !== versionCode
+    if (versionChanged) this.updateData()
+    if (firstStart) {
+      // Record initialization without requiring the agreement/welcome flow.
+      // Recording this version also prevents a changelog on the second launch.
+      this.uiConfig.isFirstStart = false
+      this.uiConfig.oldVersionCode = versionCode
+      this.showUpdateLog = false
+      AppStorage.set('uiConfig', this.uiConfig)
+    } else if (versionChanged) {
+      this.showUpdateLog = true
+    }
+    if (AppStorage.get<boolean>('crash') === true || this.appLinkConfigUrl !== '' || this.showUpdateLog) {
+      this.isEnableIndexForegroundBlur = true
+      this.isShowWelcome = true
     }
   }
 

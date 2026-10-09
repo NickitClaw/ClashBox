@@ -694,14 +694,14 @@ test('Reconnect notification is handled even when the UI running flag is stale',
   assert.equal(starts, 1); assert.equal(f.autoReconnecting, false);
 });
 function viewModelFixture(options = {}) {
-  const calls = [], events = [];
+  const calls = [], events = [], delayEvents = [], messages = [];
   const { ClashViewModel } = load('entry/src/main/ets/entryability/ClashViewModel.ets', {
     '../common/services/ConfigActivationService': activationModule,
     '../common/services/CoreMode': coreMode,
     'proxy_core/src/main/ets/rpc/RpcContract.generated': rpcGenerated,
     'proxy_core/src/main/ets/rpc/VpnLifecycleState': lifecycleModule,
     'proxy_core/src/main/ets/ProfileRepo': { ProfileRepo: class {} },
-    'proxy_core': { SocketProxyService: class {}, SocketStubService: class {
+    'proxy_core': { ProfileType: { File: 0, Url: 1 }, ProxySort: { Delay: 'Delay' }, SocketProxyService: class {}, SocketStubService: class {
       constructor(context, observer, allowVpn) { calls.push(['localCore', context.applicationInfo.name, allowVpn]); }
       async startService(id) { calls.push('startLocalCore'); if (options.localGate) await options.localGate.promise; }
       async lockVpn() {}
@@ -716,11 +716,14 @@ function viewModelFixture(options = {}) {
     } },
     'proxy_core/src/main/ets/rpc/NativeCompatibility': { assertNativeCompatibility() {} },
     '../common/utils/HHmmssTimer': { Timer: class { reset() { calls.push('resetTimer'); } start() { calls.push('timer'); } } },
-    '../common/EventHub': { EventHub: { sendEvent: e => events.push(e) }, EventKey: { StartedClash: 'started', StopedClash: 'stopped' } },
+    '../common/EventHub': { EventHub: { sendEvent: (e, value) => { events.push(e); if (e === 'delay') delayEvents.push(value); } },
+      EventKey: { StartedClash: 'started', StopedClash: 'stopped', TestDelay: 'delay', FetchProxyGroup: 'groups' } },
     '../common/utils/CardManageUtil': { cardManager: { pushCartProxyMode: state => calls.push(state ? 'runningCard' : 'stoppedCard'), pushCartVpnState: state => calls.push(state.running ? 'runningCard' : 'stoppedCard'), pushCartVpnServiceTime() {} } },
     '../common/utils/VpnNoticeConfigSync': { syncVpnNoticePrefs: async () => {} },
     '@kit.PerformanceAnalysisKit': { hilog: quiet }
-  }, { AppStorage: { setOrCreate() {}, get: () => ({ clashCore: options.core ?? 0 }) }, ...(options.time || {}) });
+  }, { AppStorage: { setOrCreate() {}, get: () => options.appConfig ?? ({ clashCore: options.core ?? 0 }) },
+    $r: (key, ...params) => ({ key, params }), ...(options.time || {}) });
+  ClashViewModel.promptAction = { showToast: message => messages.push(message) };
   const service = new ClashViewModel(); service.loadConfig = async () => calls.push('loadConfig');
   service.loadVpnOptions = async () => calls.push('loadOptions');
   service.socketProxy.isSocketReady = async () => true;
@@ -732,7 +735,7 @@ function viewModelFixture(options = {}) {
     running: calls.lastIndexOf('start') > calls.lastIndexOf('stop'), desiredRunning: calls.lastIndexOf('start') > calls.lastIndexOf('stop'), startedAt: 100, generation: 1, error: '' });
   service.socketProxy.startClash = async () => { calls.push('start'); return true; };
   service.socketProxy.stopClash = async () => { calls.push('stop'); return true; };
-  return { service, calls, events };
+  return { service, calls, events, delayEvents, messages };
 }
 test('UI reports running only after start ack; rapid start-stop-start preserves last intent', async () => {
   const f = viewModelFixture(), gate = deferred(), entered = deferred();
@@ -1268,4 +1271,165 @@ test('Debug settings insert developer options without redirecting clicks to data
     else { list.push({ name: 'DeveloperOptions' }); f.handleCheck(list.length - 1); assert.deepEqual(routes, ['About']); }
     assert.equal(resets, 1);
   }
+});
+
+function configurationRefreshFixture(refresh = async () => {}) {
+  const file = 'entry/src/main/ets/pages/ConfigurationPage.ets';
+  const src = fs.readFileSync(path.join(root, file), 'utf8');
+  const methods = src.slice(src.indexOf('  private async updateConfig('), src.indexOf('  /**分享配置的URL*/'));
+  const calls = [], messages = [];
+  const { Fixture } = load('ConfigurationRefreshFixture.ts', {}, {
+    ClashViewModel: { refreshProfileConfig: async id => { calls.push(id); await refresh(id); } },
+    Xb_ToastUtil: { showToast: message => messages.push(message.message) },
+    $r: key => key, getResourceString: key => key, NewConfigData: { configId: 'new' }
+  }, `export class Fixture { ${methods} }`);
+  const page = new Fixture(); Object.assign(page, { refreshInProgress: false, isRefreshing: false,
+    isON: {}, appConfig: { currentProfileId: 'A' }, configList: [{ configId: 'A' }],
+    currentRadioConfigData: { configId: 'new' }, loadConfig: () => assert.fail('never activate a cached placeholder') });
+  return { page, calls, messages };
+}
+
+test('Configuration refresh ignores stale placeholders, coalesces clicks and clears the spinner only on completion', async () => {
+  const gate = deferred(), f = configurationRefreshFixture(() => gate.promise);
+  const refreshing = f.page.updateConfig(); await flush();
+  assert.equal(f.page.isRefreshing, true);
+  await f.page.updateConfig(); assert.deepEqual(f.calls, [null]);
+  gate.resolve(); await refreshing;
+  assert.equal(f.page.currentRadioConfigData.configId, 'A'); assert.equal(f.page.isRefreshing, false);
+  assert.equal(f.messages.at(-1), 'app.string.updated_success_config');
+  f.page.configList = []; f.page.appConfig = {}; f.page.syncSelectedConfig();
+  assert.equal(f.page.currentRadioConfigData.configId, 'new');
+  await f.page.updateConfig(); assert.deepEqual(f.calls, [null, null]);
+  await f.page.updateConfig('B'); assert.equal(f.calls.at(-1), 'B');
+});
+
+test('Configuration refresh reports one failure, releases its guard and never reports false success', async () => {
+  const f = configurationRefreshFixture(async () => { throw new Error('download failed'); });
+  await f.page.updateConfig();
+  assert.equal(f.page.isRefreshing, false); assert.equal(f.page.refreshInProgress, false);
+  assert.equal(f.messages.length, 2); assert.match(f.messages.at(-1), /download failed/);
+  assert.ok(!f.messages.includes('app.string.updated_success_config'));
+  await f.page.updateConfig(); assert.equal(f.calls.length, 2);
+});
+
+test('Manual refresh downloads before reloading the selected profile and skips unrelated, absent or deleted selections', async () => {
+  for (const [selected, target, exists, shouldReload] of [
+    ['A', null, true, true], ['A', 'A', true, true], ['A', 'B', true, false],
+    [undefined, null, false, false], ['deleted', null, false, false]
+  ]) {
+    const f = viewModelFixture({ appConfig: { currentProfileId: selected } }), order = [];
+    f.service.updateProfileConfig = async (id, notify) => { order.push('download'); assert.equal(id, target); assert.equal(notify, false); };
+    f.service.getProfile = async () => exists ? { id: selected } : undefined;
+    f.service.activation.reload = async (patch, expected) => { order.push('reload'); assert.equal(patch, false); assert.equal(expected, selected); };
+    await f.service.refreshProfileConfig(target);
+    assert.deepEqual(order, shouldReload ? ['download', 'reload'] : ['download']);
+    f.service.updateProfileConfig = async () => { throw new Error('download failed'); };
+    order.length = 0; await assert.rejects(f.service.refreshProfileConfig(target), /download failed/);
+    assert.deepEqual(order, []);
+  }
+});
+
+test('A queued refresh cannot reload or replace a profile selected after the refresh began', async () => {
+  const f = activationFixture(), gate = deferred(), entered = deferred(), apply = f.host.apply;
+  f.host.apply = async snapshot => { if (snapshot.id === 'B') { entered.resolve(); await gate.promise; } await apply(snapshot); };
+  const switchProfile = f.service.activate('B'); await entered.promise;
+  const refreshOldSelection = f.service.reload(false, 'A');
+  gate.resolve(); assert.equal(await switchProfile, true); assert.equal(await refreshOldSelection, false);
+  assert.equal(f.state.selected, 'B'); assert.deepEqual(f.state.applied, ['B']);
+});
+
+test('Subscription refresh writes download metadata without resurrecting rows or overwriting selection fields', async () => {
+  for (const target of ['A', null]) {
+    const f = viewModelFixture(), writes = [], profile = { id: 'A', type: 1, loadContext() {}, async update() { writes.push('download'); } };
+    f.service.getProfile = async () => profile; f.service.getProfiles = async () => [profile];
+    f.service.profileRepo.updateDownloadMetadata = async p => { assert.equal(p, profile); writes.push('metadata'); };
+    f.service.profileRepo.addOrUpdate = () => assert.fail('must not upsert stale profile');
+    await f.service.updateProfileConfig(target, false);
+    assert.deepEqual(writes, ['download', 'metadata']); assert.equal(f.messages.length, 0);
+  }
+});
+
+test('Large delay tests use sequential bounded batches, deduplicate nodes and show failures without toasts', async () => {
+  const f = viewModelFixture({ appConfig: { proxySort: 'Delay', testUrl: 'https://example.test/ping' } });
+  const list = Array.from({ length: 125 }, (_, i) => ({ name: `node-${i}` })); list.push(list[0]);
+  let active = 0, peak = 0; const batches = [];
+  f.service.socketProxy.healthCheck = () => assert.fail('no per-node socket fanout');
+  f.service.socketProxy.healthCheckBatch = async (names, timeout, url) => {
+    active++; peak = Math.max(peak, active); batches.push(Array.from(names));
+    assert.equal(timeout, 3000); assert.equal(url, 'https://example.test/ping'); await flush(); active--;
+    return new Map(names.map(name => [name, Number(name.slice(5)) % 2 ? -1 : 42]));
+  };
+  const result = await f.service.testAllDelay(list);
+  assert.equal(peak, 1); assert.ok(batches.every(b => b.length <= 20)); assert.equal(batches.flat().length, 125);
+  assert.equal(result.length, 126); assert.equal(result[0], 42); assert.equal(result[1], -1); assert.equal(result.at(-1), 42);
+  assert.equal(f.messages.length, 0);
+  assert.equal(f.service.delayMap.get('node-1').delay, -1);
+  assert.equal(f.delayEvents.filter(e => e.delay === 0).length, 125);
+  assert.equal(f.delayEvents.filter(e => e.delay !== 0).length, 125);
+  assert.equal(f.events.filter(e => e === 'groups').length, 1);
+});
+
+test('Delay transport failure stops remaining requests, finalizes loading states and reports only one connection error', async () => {
+  const f = viewModelFixture(); let calls = 0;
+  f.service.socketProxy.healthCheckBatch = async names => {
+    if (++calls === 2) throw new Error('连接已关闭，未收到完整响应');
+    return new Map(names.map(name => [name, 50]));
+  };
+  const result = await f.service.testAllDelay(Array.from({ length: 61 }, (_, i) => ({ name: `${i}` })));
+  assert.equal(calls, 2); assert.equal(result.filter(delay => delay === 50).length, 20);
+  assert.equal(result.filter(delay => delay === -1).length, 41);
+  assert.ok([...f.service.delayMap.values()].every(info => info.delay !== 0));
+  assert.equal(f.messages.length, 1); assert.equal(f.messages[0].message.key, 'app.string.delay_test_connection_failed');
+});
+
+test('Repeated delay clicks share one operation and a completed test permits a fresh run', async () => {
+  const f = viewModelFixture(), gate = deferred(); let calls = 0;
+  f.service.socketProxy.healthCheckBatch = async names => { calls++; await gate.promise; return new Map(names.map(name => [name, 20])); };
+  const first = f.service.testAllDelay([{ name: 'node' }]);
+  const second = f.service.testAllDelay([{ name: 'node' }]);
+  assert.equal(first, second); assert.equal(calls, 1);
+  gate.resolve(); await first;
+  await f.service.testAllDelay([{ name: 'node' }]); assert.equal(calls, 2); assert.equal(f.messages.length, 0);
+  assert.equal((await f.service.testAllDelay([])).length, 0); assert.equal(calls, 2);
+});
+
+test('A failed single-node delay test replaces its old result and loading event with failure', async () => {
+  const f = viewModelFixture(); f.service.delayMap.set('node', { name: 'node', delay: 25 });
+  f.service.socketProxy.healthCheck = async () => { throw new Error('connection closed'); };
+  assert.equal(await f.service.testDelay('node'), -1); assert.equal(f.service.delayMap.get('node').delay, -1);
+  assert.deepEqual(f.delayEvents.map(e => e.delay), [0, -1]); assert.equal(f.messages.length, 1);
+});
+
+function startupFixture(config, crash = false, appLink = '') {
+  const src = fs.readFileSync(path.join(root, 'entry/src/main/ets/pages/Index.ets'), 'utf8');
+  const method = src.slice(src.indexOf('  private completeStartup('), src.indexOf('  /** @description 统一注册事件 */'));
+  const stored = new Map(); let migrations = 0;
+  const { Fixture } = load('StartupFixture.ts', {}, {
+    AppStorage: { get: key => key === 'crash' && crash, set: (key, value) => stored.set(key, value) }
+  }, `export class Fixture { ${method} }`);
+  const page = new Fixture(); Object.assign(page, { uiConfig: config, appLinkConfigUrl: appLink,
+    isShowWelcome: false, isEnableIndexForegroundBlur: false, showUpdateLog: false, updateData() { migrations++; } });
+  return { page, stored, migrations: () => migrations };
+}
+
+test('First launch skips agreements and changelog, persists the current version and stays quiet on relaunch', () => {
+  const f = startupFixture({ isFirstStart: true, oldVersionCode: 1 });
+  f.page.completeStartup(7);
+  assert.equal(f.page.isShowWelcome, false); assert.equal(f.page.showUpdateLog, false);
+  assert.equal(f.page.isEnableIndexForegroundBlur, false); assert.equal(f.migrations(), 1);
+  assert.equal(f.stored.get('uiConfig').isFirstStart, false); assert.equal(f.stored.get('uiConfig').oldVersionCode, 7);
+  const relaunch = startupFixture(f.stored.get('uiConfig')); relaunch.page.completeStartup(7);
+  assert.equal(relaunch.page.isShowWelcome, false); assert.equal(relaunch.migrations(), 0);
+});
+
+test('Skipping first-run prompts preserves crash/import sheets and upgrade data migration', () => {
+  for (const [crash, url] of [[true, ''], [false, 'https://example.test/subscription']]) {
+    const f = startupFixture({ isFirstStart: true, oldVersionCode: 1 }, crash, url);
+    f.page.completeStartup(7);
+    assert.equal(f.page.isShowWelcome, true); assert.equal(f.page.showUpdateLog, false);
+    assert.equal(f.page.appLinkConfigUrl, url);
+  }
+  const upgrade = startupFixture({ isFirstStart: false, oldVersionCode: 6 }); upgrade.page.completeStartup(7);
+  assert.equal(upgrade.migrations(), 1); assert.equal(upgrade.page.showUpdateLog, true);
+  assert.equal(upgrade.page.isShowWelcome, true); assert.equal(upgrade.page.uiConfig.oldVersionCode, 6);
 });

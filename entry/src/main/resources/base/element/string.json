@@ -1,6 +1,10 @@
 {
   "string": [
     {
+      "name": "delay_test_connection_failed",
+      "value": "测速服务连接中断，部分节点未完成测试，请稍后重试"
+    },
+    {
       "name": "foreground_core_title",
       "value": "前台模式 (mihomo)"
     },

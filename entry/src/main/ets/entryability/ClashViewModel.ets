@@ -230,7 +230,17 @@ export class ClashViewModel {
     EventHub.sendEvent(EventKey.FetchProfile, null);
   }
 
-  async updateProfileConfig(id: string | null): Promise<void> {
+  async refreshProfileConfig(id: string | null): Promise<void> {
+    // Read the persisted selection, never the page's placeholder/cached list item.
+    const selectedId = AppStorage.get<AppConfig>('appConfig')?.currentProfileId
+    await this.updateProfileConfig(id, false)
+    if (selectedId && (id === null || id === selectedId) && await this.getProfile(selectedId)) {
+      // The activation queue checks selection again: a refresh must not undo a later switch.
+      await this.activation.reload(false, selectedId)
+    }
+  }
+
+  async updateProfileConfig(id: string | null, notify: boolean = true): Promise<void> {
     const ua = AppStorage.get<ClashConfig>("clashConfig")?.["global-ua"]
     if (id) {
       const profile = await this.getProfile(id)
@@ -238,17 +248,17 @@ export class ClashViewModel {
         try {
           profile.loadContext(this.context, ua)
           await profile.update(this.socketProxy)
-          await this.profileRepo.addOrUpdate(profile)
-          if (this.context) {
+          await this.profileRepo.updateDownloadMetadata(profile)
+          if (notify && this.context) {
             ClashViewModel.promptAction.showToast({ message: `${Xb_GetResourceString($r('app.string.Configuration'), this.context)} ${profile.name} ${Xb_GetResourceString($r('app.string.update_success'), this.context)}`})
           }
         } catch (e) {
           let message = ""
-          if (this.context) {
+          if (notify && this.context) {
             message = `${Xb_GetResourceString($r('app.string.Configuration'), this.context)} ${profile.name} ${Xb_GetResourceString($r('app.string.update_failed'), this.context)}: ${e.message} ${Xb_GetResourceString($r('app.string.check_configured_URL'), this.context)}`
             Xb_ToastUtil.showToast({message: message})
           }
-          return Promise.reject(message)
+          throw new Error(message || (e as Error).message || String(e))
         }
       }
     } else {
@@ -257,7 +267,7 @@ export class ClashViewModel {
         if (!p.isUpdating) {
           p.loadContext(this.context, ua)
           await p.update(this.socketProxy)
-          await this.profileRepo.addOrUpdate(p)
+          await this.profileRepo.updateDownloadMetadata(p)
         }
       }
     }
@@ -291,28 +301,75 @@ export class ClashViewModel {
 
 
   delayMap: Map<string, DelayInfo> = new Map()
+  private delayTestOperation?: Promise<number[]>
+
+  private publishDelay(name: string, delay: number): void {
+    const info: DelayInfo = { name: name, delay: delay }
+    this.delayMap.set(name, info)
+    EventHub.sendEvent(EventKey.TestDelay, info)
+  }
 
   async testDelay(proxyName: string): Promise<number>{
     try {
-      EventHub.sendEvent(EventKey.TestDelay, { name: proxyName, delay: 0 } as DelayInfo)
+      this.publishDelay(proxyName, 0)
       let delay = await this.socketProxy.healthCheck(proxyName)
 
-      EventHub.sendEvent(EventKey.TestDelay, { name: proxyName, delay: delay } as DelayInfo)
-      this.delayMap.set(proxyName, { name: proxyName, delay: delay } as DelayInfo)
+      this.publishDelay(proxyName, delay)
       return delay;
     } catch (e) {
+      this.publishDelay(proxyName, -1)
       ClashViewModel.promptAction.showToast({message: e.message, duration: 3000})
     }
     return -1;
   }
 
-  async testAllDelay(list: ProxyItem[]): Promise<number[]>{
-    const result = await Promise.all(list.map((l)=> this.testDelay(l.name)))
+  testAllDelay(list: ProxyItem[]): Promise<number[]> {
+    if (this.delayTestOperation) return this.delayTestOperation
+    const pending = this.runDelayTests(list).finally(() => {
+      if (this.delayTestOperation === pending) this.delayTestOperation = undefined
+    })
+    this.delayTestOperation = pending
+    return pending
+  }
+
+  private async runDelayTests(list: ProxyItem[]): Promise<number[]> {
+    const names = Array.from(new Set(list.map(item => item.name)))
+    const results = new Map<string, number>()
+    const testUrl = AppStorage.get<AppConfig>('appConfig')?.testUrl
+    let connectionFailed = false
+    for (const name of names) this.publishDelay(name, 0)
+    // One bounded batch per IPC connection. Avoid queueing hundreds of open
+    // single-node requests behind the native concurrency limit and RPC deadline.
+    for (let offset = 0; offset < names.length; offset += 20) {
+      const batch = names.slice(offset, offset + 20)
+      try {
+        const delays = await this.socketProxy.healthCheckBatch(batch, 3000, testUrl)
+        for (const name of batch) {
+          const delay = delays.get(name) ?? -1
+          results.set(name, delay)
+          this.publishDelay(name, delay)
+        }
+      } catch (error) {
+        connectionFailed = true
+        console.warn('批量测速服务请求失败', (error as Error).message)
+        // Stop on a transport/protocol failure instead of flooding a dead service.
+        for (const name of names.slice(offset)) {
+          results.set(name, -1)
+          this.publishDelay(name, -1)
+        }
+        break
+      }
+    }
+    if (connectionFailed) {
+      ClashViewModel.promptAction.showToast({
+        message: $r('app.string.delay_test_connection_failed'), duration: 3000
+      })
+    }
     let appConfig = AppStorage.get<AppConfig>("appConfig")
     if (appConfig?.proxySort === ProxySort.Delay) {
       EventHub.sendEvent(EventKey.FetchProxyGroup)
     }
-    return result;
+    return list.map(item => results.get(item.name) ?? -1);
   }
 
   async updateGeoData( geoType: string, geoName: string): Promise<string>{

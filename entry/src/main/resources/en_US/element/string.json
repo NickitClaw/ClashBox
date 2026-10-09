@@ -1,6 +1,10 @@
 {
   "string": [
     {
+      "name": "delay_test_connection_failed",
+      "value": "Connection to the test service was interrupted. Some nodes were not tested; please try again."
+    },
+    {
       "name": "foreground_core_title",
       "value": "Foreground mode (mihomo)"
     },

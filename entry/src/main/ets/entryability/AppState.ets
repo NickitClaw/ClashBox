@@ -147,7 +147,7 @@ export class UIConfig {
   proxyEnabled: boolean = false
   // 高级功能启用状态
   enabledADvanced: boolean = false
-  // 是否第一次启动应用 TODO debug时为 false release时为 true
+  // 首次初始化标记；完成版本记录后直接进入主页。
   isFirstStart: boolean = true
   // 应用使用时间记录
   useTime: number = new Date().getTime()

@@ -518,10 +518,14 @@ struct ProxyPage {
       }, 200)
     }*/
     EventHub.on(EventKey.TestAllDelay, async () => {
+      if (this.isTestingDelay) return
+      const group = this.proxyGroups.getData(this.currentProxyIndex)
+      if (!group?.proxies?.length) return
+      this.isTestingDelay = true
       Xb_ToastUtil.showToast({ message: $r('app.string.Test_Delay_Tip') })
       let results: number[] = []
       try {
-        results = await ClashViewModel.testAllDelay(this.proxyGroups.getData(this.currentProxyIndex).proxies as ProxyItem[])
+        results = await ClashViewModel.testAllDelay(group.proxies as ProxyItem[])
         console.log(`ProxySort results: ${JSON.stringify(results)}`)
         // 测速完成后如果配置为延迟排序则触发一次排序事件
         if (this.appConfig.proxySort === ProxySort.Delay && results) {
@@ -535,15 +539,17 @@ struct ProxyPage {
           this.needChangeSort = true
         }
         console.error(`ProxySort message: ${err.message}, code: ${err.code}`)
-      }
-      if (!results) {
         Xb_ToastUtil.showToast({ message: `延迟测试失败，请检查测试用链接`, duration: 3000})
+      } finally {
+        this.isTestingDelay = false
       }
       if (this.uiConfig.isVibrate) {
         customVibrator.vibratorTriggerOfHapticClockTimer()
       }
     })
   }
+
+  private isTestingDelay: boolean = false
 
   aboutToDisappear() {
     EventHub.off(EventKey.TestAllDelay)
