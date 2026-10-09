@@ -148,3 +148,71 @@ func TestStreamSessionDisconnectCancelsLateCallbacks(t *testing.T) {
 		t.Fatal("late callback wrote to closed peer")
 	}
 }
+
+func TestFinalResponseWaitsForPeerClose(t *testing.T) {
+	server, client := net.Pipe()
+	defer client.Close()
+	_ = client.SetDeadline(time.Now().Add(time.Second))
+	session := NewSession(server)
+	defer session.Close()
+	session.WatchDisconnect()
+	sent := make(chan error, 1)
+	go func() { sent <- session.Send([]byte(`{"result":"complete"}`), true) }()
+	if _, err := Read(client); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-sent; err != nil {
+		t.Fatal(err)
+	}
+	// Native recv may finish before ArkTS dispatches its queued message event.
+	// A successful write is not permission to publish a close event first.
+	select {
+	case <-session.Done():
+		t.Fatal("server closed before the peer consumed the response")
+	default:
+	}
+	if err := session.Send([]byte("duplicate response"), true); err == nil {
+		t.Fatal("accepted a second final response")
+	}
+	_ = client.Close()
+	select {
+	case <-session.Done():
+	case <-time.After(time.Second):
+		t.Fatal("client acknowledgement did not release session")
+	}
+}
+
+type shortReadDeadlineConn struct {
+	net.Conn
+	deadline time.Time
+}
+
+func (c *shortReadDeadlineConn) SetReadDeadline(deadline time.Time) error {
+	c.deadline = deadline
+	return c.Conn.SetReadDeadline(time.Now().Add(20 * time.Millisecond))
+}
+
+func TestFinalResponseReleasesUnresponsivePeer(t *testing.T) {
+	server, client := net.Pipe()
+	defer client.Close()
+	conn := &shortReadDeadlineConn{Conn: server}
+	session := NewSession(conn)
+	defer session.Close()
+	session.WatchDisconnect()
+	sent := make(chan error, 1)
+	go func() { sent <- session.Send([]byte("result"), true) }()
+	if _, err := Read(client); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-sent; err != nil {
+		t.Fatal(err)
+	}
+	if remaining := time.Until(conn.deadline); remaining <= 0 || remaining > 5*time.Second {
+		t.Fatalf("unbounded or expired peer acknowledgement deadline: %v", remaining)
+	}
+	select {
+	case <-session.Done():
+	case <-time.After(time.Second):
+		t.Fatal("unresponsive peer leaked the session")
+	}
+}

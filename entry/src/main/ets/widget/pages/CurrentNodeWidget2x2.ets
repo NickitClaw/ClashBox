@@ -1,6 +1,7 @@
 import { IpInfo } from 'proxy_core';
 import ActionUtils from '../utils/ActionUtils'
 import { ProxyActionType } from '../model/FormCardConstant'
+import { DELAY_NOT_MEASURED } from '../../common/entity/DelayResult'
 
 const localStorage = new LocalStorage()
 
@@ -147,7 +148,9 @@ struct CurrentNodeWidget2x2 {
 
   /** @description 延迟文本 */
   delayText(delay: number) {
-    if (delay == 0) {
+    if (delay === DELAY_NOT_MEASURED) {
+      return "—"
+    } else if (delay == 0) {
       return "unknown"
     } else if (delay < 0) {
       return "timeout"

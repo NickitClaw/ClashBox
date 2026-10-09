@@ -69,15 +69,16 @@ func handleConnection(conn net.Conn) {
 		return
 	}
 	request, fault := rpccontract.DecodeRequest(payload, "go")
-	if fault != nil {
-		data, _ := json.Marshal(rpccontract.Failure(request.Method, fault))
-		_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-		_ = rpcframe.Write(conn, data)
-		return
-	}
 	_ = conn.SetReadDeadline(time.Time{})
 	session := rpcframe.NewSession(conn)
 	defer session.Close()
+	session.WatchDisconnect()
+	if fault != nil {
+		data, _ := json.Marshal(rpccontract.Failure(request.Method, fault))
+		_ = session.Send(data, true)
+		<-session.Done()
+		return
+	}
 	spec, _ := rpccontract.Lookup(request.Method)
 	streaming := spec.Stream
 	reply := func(result RpcResult) {
@@ -97,7 +98,6 @@ func handleConnection(conn net.Conn) {
 		}
 		_ = session.Send(data, !streaming || result.Error != "")
 	}
-	session.WatchDisconnect()
 	if request.Method == SetLogObserver {
 		ready := make(chan struct{})
 		unsubscribe := subscribeLog(func(value string) {

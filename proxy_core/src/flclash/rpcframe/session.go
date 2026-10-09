@@ -9,10 +9,11 @@ import (
 // Session owns response writes until the asynchronous result, timeout or peer
 // disconnect. A handler returning is not a signal to close its connection.
 type Session struct {
-	conn net.Conn
-	mu   sync.Mutex
-	once sync.Once
-	done chan struct{}
+	conn  net.Conn
+	mu    sync.Mutex
+	once  sync.Once
+	done  chan struct{}
+	final bool
 }
 
 func NewSession(conn net.Conn) *Session {
@@ -36,9 +37,18 @@ func (s *Session) Send(payload []byte, final bool) error {
 	default:
 	}
 	_ = s.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	if s.final {
+		return net.ErrClosed
+	}
 	err := Write(s.conn, payload)
-	if err != nil || final {
+	if err != nil {
 		s.Finish()
+	} else if final {
+		s.final = true
+		// The ArkTS peer closes after decoding the complete response. Avoid
+		// racing queued message callbacks with a server-initiated close event.
+		// WatchDisconnect bounds the lifetime of peers that never close.
+		_ = s.conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	}
 	return err
 }

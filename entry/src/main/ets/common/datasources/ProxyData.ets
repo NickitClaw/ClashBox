@@ -2,6 +2,7 @@ import { ProxyGroup, ProxySort } from "proxy_core"
 import { BaseDataSource } from "./BaseDataSource"
 import { intl } from "@kit.LocalizationKit"
 import ClashViewModel, { DelayInfo } from "../../entryability/ClashViewModel"
+import { DELAY_NOT_MEASURED } from '../entity/DelayResult'
 
 // 定义一个接口来描述列表项的数据结构
 export interface ProxyItem {
@@ -26,6 +27,7 @@ export class ProxyData {
   }
 
   public static getColorForLatency(latency: number): ResourceColor {
+    if (latency === DELAY_NOT_MEASURED) return $r('sys.color.font_secondary')
     if (latency >= 0 && latency <= 500) {
       return '#64BB5C'; // 绿色，表示低延迟
     }
@@ -159,4 +161,3 @@ export class ProxyItemDataSource extends BaseDataSource<ProxyItem> {
 
 // 中文排序
 let ProxyCollator = new intl.Collator("zh-CN");
-

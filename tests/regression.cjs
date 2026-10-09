@@ -62,6 +62,7 @@ const rpcContract = load('proxy_core/src/main/ets/rpc/RpcContract.ets', { './Rpc
 const lifecycleModule = load('proxy_core/src/main/ets/rpc/VpnLifecycleState.ets', { './RpcContract.generated': rpcGenerated });
 const activationModule = load('entry/src/main/ets/common/services/ConfigActivationService.ets');
 const coreMode = load('entry/src/main/ets/common/services/CoreMode.ts');
+const delayResult = load('entry/src/main/ets/common/entity/DelayResult.ts');
 const flush = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
 const deferred = () => { let resolve; const promise = new Promise(r => resolve = r); return { promise, resolve }; };
 const nodeOf = uri => yaml.parse(YamlUtils.convertUniversalToClashYaml(uri)).proxies[0];
@@ -696,6 +697,7 @@ test('Reconnect notification is handled even when the UI running flag is stale',
 function viewModelFixture(options = {}) {
   const calls = [], events = [], delayEvents = [], messages = [];
   const { ClashViewModel } = load('entry/src/main/ets/entryability/ClashViewModel.ets', {
+    '../common/entity/DelayResult': delayResult,
     '../common/services/ConfigActivationService': activationModule,
     '../common/services/CoreMode': coreMode,
     'proxy_core/src/main/ets/rpc/RpcContract.generated': rpcGenerated,
@@ -1377,7 +1379,7 @@ test('Delay transport failure stops remaining requests, finalizes loading states
   };
   const result = await f.service.testAllDelay(Array.from({ length: 61 }, (_, i) => ({ name: `${i}` })));
   assert.equal(calls, 2); assert.equal(result.filter(delay => delay === 50).length, 20);
-  assert.equal(result.filter(delay => delay === -1).length, 41);
+  assert.equal(result.filter(delay => delay === -2).length, 41);
   assert.ok([...f.service.delayMap.values()].every(info => info.delay !== 0));
   assert.equal(f.messages.length, 1); assert.equal(f.messages[0].message.key, 'app.string.delay_test_connection_failed');
 });
@@ -1393,11 +1395,32 @@ test('Repeated delay clicks share one operation and a completed test permits a f
   assert.equal((await f.service.testAllDelay([])).length, 0); assert.equal(calls, 2);
 });
 
-test('A failed single-node delay test replaces its old result and loading event with failure', async () => {
+test('A single-node transport failure is unmeasured rather than a node timeout', async () => {
   const f = viewModelFixture(); f.service.delayMap.set('node', { name: 'node', delay: 25 });
   f.service.socketProxy.healthCheck = async () => { throw new Error('connection closed'); };
-  assert.equal(await f.service.testDelay('node'), -1); assert.equal(f.service.delayMap.get('node').delay, -1);
-  assert.deepEqual(f.delayEvents.map(e => e.delay), [0, -1]); assert.equal(f.messages.length, 1);
+  assert.equal(await f.service.testDelay('node'), -2); assert.equal(f.service.delayMap.get('node').delay, -2);
+  assert.deepEqual(f.delayEvents.map(e => e.delay), [0, -2]); assert.equal(f.messages.length, 1);
+});
+
+test('Latency labels distinguish unmeasured nodes from actual timeouts, and recycled rows reset their delay', () => {
+  const src = fs.readFileSync(path.join(root, 'entry/src/main/ets/components/Proxy/ProxyNodeItem.ets'), 'utf8');
+  const format = src.slice(src.indexOf('export function delayText('));
+  const { delayText } = load('DelayTextFixture.ts', {}, delayResult, format);
+  assert.equal(delayText(-2), '—'); assert.equal(delayText(-1), 'timeout');
+  assert.equal(delayText(0), ''); assert.equal(delayText(120), '120ms');
+  const widgetSrc = fs.readFileSync(path.join(root, 'entry/src/main/ets/widget/pages/CurrentNodeWidget2x2.ets'), 'utf8');
+  const widgetMethod = widgetSrc.slice(widgetSrc.indexOf('  delayText('), widgetSrc.indexOf('  /** @description 根据延迟计算颜色 */'));
+  const { Widget } = load('WidgetDelayFixture.ts', {}, delayResult, `export class Widget { ${widgetMethod} }`);
+  const widget = new Widget();
+  assert.equal(widget.delayText(-2), '—'); assert.equal(widget.delayText(-1), 'timeout');
+  const method = src.slice(src.indexOf('  aboutToReuse('), src.indexOf('  aboutToAppear('));
+  const { Fixture } = load('ReusedProxyNodeFixture.ts', {}, { ClashViewModel: { delayMap: new Map([
+    ['untested', { delay: -2 }], ['timeout', { delay: -1 }], ['working', { delay: 120 }]
+  ]) } }, `export class Fixture { ${method} }`);
+  const row = new Fixture(); row.delay = -1;
+  for (const [name, expected] of [['untested', -2], ['working', 120], ['unknown', 0], ['timeout', -1]]) {
+    row.aboutToReuse({ item: { name } }); assert.equal(row.delay, expected);
+  }
 });
 
 function startupFixture(config, crash = false, appLink = '') {

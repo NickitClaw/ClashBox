@@ -35,6 +35,7 @@ import { syncVpnNoticePrefs } from "../common/utils/VpnNoticeConfigSync";
 import { deviceInfo } from "@kit.BasicServicesKit";
 import BuildProfile from 'BuildProfile';
 import { resolveCoreMode } from '../common/services/CoreMode';
+import { DELAY_NOT_MEASURED } from '../common/entity/DelayResult';
 
 /** VPN 授权结果监听（vpnExtension.createVpnObserver）自 API 26.0.0 起可用 */
 const VPN_OBSERVER_MIN_API = 26
@@ -317,10 +318,10 @@ export class ClashViewModel {
       this.publishDelay(proxyName, delay)
       return delay;
     } catch (e) {
-      this.publishDelay(proxyName, -1)
+      this.publishDelay(proxyName, DELAY_NOT_MEASURED)
       ClashViewModel.promptAction.showToast({message: e.message, duration: 3000})
     }
-    return -1;
+    return DELAY_NOT_MEASURED;
   }
 
   testAllDelay(list: ProxyItem[]): Promise<number[]> {
@@ -345,7 +346,7 @@ export class ClashViewModel {
       try {
         const delays = await this.socketProxy.healthCheckBatch(batch, 3000, testUrl)
         for (const name of batch) {
-          const delay = delays.get(name) ?? -1
+          const delay = delays.get(name) ?? DELAY_NOT_MEASURED
           results.set(name, delay)
           this.publishDelay(name, delay)
         }
@@ -354,8 +355,8 @@ export class ClashViewModel {
         console.warn('批量测速服务请求失败', (error as Error).message)
         // Stop on a transport/protocol failure instead of flooding a dead service.
         for (const name of names.slice(offset)) {
-          results.set(name, -1)
-          this.publishDelay(name, -1)
+          results.set(name, DELAY_NOT_MEASURED)
+          this.publishDelay(name, DELAY_NOT_MEASURED)
         }
         break
       }
@@ -369,7 +370,7 @@ export class ClashViewModel {
     if (appConfig?.proxySort === ProxySort.Delay) {
       EventHub.sendEvent(EventKey.FetchProxyGroup)
     }
-    return list.map(item => results.get(item.name) ?? -1);
+    return list.map(item => results.get(item.name) ?? DELAY_NOT_MEASURED);
   }
 
   async updateGeoData( geoType: string, geoName: string): Promise<string>{

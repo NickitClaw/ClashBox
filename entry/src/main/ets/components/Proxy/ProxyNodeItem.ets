@@ -2,6 +2,7 @@ import { EventHub, EventKey } from '../../common/EventHub'
 import { ProxyItem as ProxyItem, ProxyData } from '../../common/datasources/ProxyData'
 import { AppConfig, ProxyCardSize, UIConfig } from '../../entryability/AppState'
 import ClashViewModel, { DelayInfo } from '../../entryability/ClashViewModel'
+import { DELAY_NOT_MEASURED } from '../../common/entity/DelayResult'
 import { customVibrator } from '../../common/utils/VibratorUtil'
 import { hilog } from '@kit.PerformanceAnalysisKit'
 
@@ -27,6 +28,7 @@ export struct ProxyNode {
     this.selected = params.selected as string
     this.selectProxy = params.selectProxy as (item: ProxyItem) => void
     this.onLatencyChange = params.onLatencyChange as (l: number)=> void
+    this.delay = ClashViewModel.delayMap.get(this.item.name)?.delay ?? 0
   }
 
   aboutToAppear(): void {
@@ -149,7 +151,9 @@ function ListRowStyle() {
 }
 
 export function delayText(delay: number){
-  if (delay == 0) {
+  if (delay === DELAY_NOT_MEASURED) {
+    return "—"
+  } else if (delay == 0) {
     return ""
   } else if(delay < 0){
     return "timeout"
@@ -157,4 +161,3 @@ export function delayText(delay: number){
     return delay + "ms"
   }
 }
-
