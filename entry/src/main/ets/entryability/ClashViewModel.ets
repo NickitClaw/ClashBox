@@ -34,6 +34,7 @@ import { accessControlRdb } from "../common/datasources/AccessControlRdb";
 import { syncVpnNoticePrefs } from "../common/utils/VpnNoticeConfigSync";
 import { deviceInfo } from "@kit.BasicServicesKit";
 import BuildProfile from 'BuildProfile';
+import { resolveCoreMode } from '../common/services/CoreMode';
 
 /** VPN 授权结果监听（vpnExtension.createVpnObserver）自 API 26.0.0 起可用 */
 const VPN_OBSERVER_MIN_API = 26
@@ -447,7 +448,7 @@ export class ClashViewModel {
     this.socketProxy.resetCompatibility();
     let requestId = Date.now();
     this.vpnRequestId = requestId;
-    const selectedCore = coreType ?? AppStorage.get<AppConfig>('appConfig')?.clashCore ?? ClashCore.mihomo
+    const selectedCore = resolveCoreMode(coreType ?? AppStorage.get<AppConfig>('appConfig')?.clashCore, BuildProfile.DEBUG)
     if (this.coreOnlyDebug) {
       if (!this.localCore && await this.socketProxy.isSocketReady()) {
         throw new Error('已有内核服务运行，请先停止 VPN 再启动内核调试模式')

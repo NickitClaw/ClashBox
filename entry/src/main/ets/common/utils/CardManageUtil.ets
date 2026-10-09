@@ -5,6 +5,8 @@ import { preferences } from '@kit.ArkData'
 import { formBindingData, formProvider } from '@kit.FormKit';
 import { ClashConfig, IpInfo, Profile } from 'proxy_core';
 import { AppConfig } from '../../entryability/AppState';
+import BuildProfile from 'BuildProfile';
+import { resolveCoreMode } from '../services/CoreMode';
 
 /** @description 切换代理参数 */
 class changeProxyParams {
@@ -190,7 +192,9 @@ class CardManager {
   /** @description 获取App配置 */
   getAppConfig() {
     if (this.store) {
-      return this.store.getSync(this.appConfigKey, new AppConfig()) as AppConfig
+      const config = this.store.getSync(this.appConfigKey, new AppConfig()) as AppConfig
+      config.clashCore = resolveCoreMode(config.clashCore, BuildProfile.DEBUG)
+      return config
     }
     return null
   }
@@ -198,6 +202,7 @@ class CardManager {
   /** @description 存储App配置 */
   setAppConfig(appConfig: AppConfig) {
     if (this.store) {
+      appConfig.clashCore = resolveCoreMode(appConfig.clashCore, BuildProfile.DEBUG)
       let newConfig = new AppConfig()
       newConfig = appConfig
       this.store.putSync(this.appConfigKey, newConfig)

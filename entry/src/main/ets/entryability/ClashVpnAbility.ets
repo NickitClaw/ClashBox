@@ -6,6 +6,8 @@ import { ClashCore } from './AppState';
 import fs from  "@ohos.file.fs"
 import { writeFile } from 'proxy_core/src/main/ets/fileUtils';
 import util from '@ohos.util';
+import BuildProfile from 'BuildProfile';
+import { resolveCoreMode } from '../common/services/CoreMode';
 
 
 export default class ClashVpnAbility extends VpnExtensionAbility {
@@ -16,7 +18,7 @@ export default class ClashVpnAbility extends VpnExtensionAbility {
   }
   async onCreate(want: Want) {
     try {
-      let core = want.parameters?.["ClashCore"] as ClashCore ?? ClashCore.mihomo
+      const core = resolveCoreMode(want.parameters?.["ClashCore"] as ClashCore | undefined, BuildProfile.DEBUG)
       let requestId = want.parameters?.["requestId"] as number
       if(core == ClashCore.mihomo){
         console.log("ClashBox", `启用核心 mihomo`);
@@ -45,6 +47,5 @@ export default class ClashVpnAbility extends VpnExtensionAbility {
   }
 
 };
-
 
 

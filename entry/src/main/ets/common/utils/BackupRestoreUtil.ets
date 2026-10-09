@@ -4,6 +4,8 @@ import { AppConfig, UIConfig } from "../../entryability/AppState";
 import ClashViewModel from "../../entryability/ClashViewModel";
 import { filterStringsByBooleans } from "../entity/Constants";
 import { getJsonArrayType } from "../entity/utils";
+import BuildProfile from 'BuildProfile';
+import { resolveCoreMode } from '../services/CoreMode';
 
 
 export interface BackupConfig {
@@ -52,6 +54,7 @@ class BackupRestoreUtil {
         if (uri) {
           config = await Xb_FileUtils.importDataByFile<BackupConfig>(uri)
           if (config) {
+            config.appConfig.clashCore = resolveCoreMode(config.appConfig.clashCore, BuildProfile.DEBUG)
             AppStorage.set("appConfig", config.appConfig)
             const type = getJsonArrayType(config.uiConfig.isShowHomeCard)
             if (type === 'boolean') {
@@ -89,6 +92,7 @@ class BackupRestoreUtil {
       })
     } else {
       // 外部提供config
+      config.appConfig.clashCore = resolveCoreMode(config.appConfig.clashCore, BuildProfile.DEBUG)
       AppStorage.set("appConfig", config.appConfig)
       const type = getJsonArrayType(config.uiConfig.isShowHomeCard)
       if (type === 'boolean') {

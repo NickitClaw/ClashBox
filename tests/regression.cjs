@@ -61,6 +61,7 @@ const rpcGenerated = load('proxy_core/src/main/ets/rpc/RpcContract.generated.ts'
 const rpcContract = load('proxy_core/src/main/ets/rpc/RpcContract.ets', { './RpcContract.generated': rpcGenerated, '@kit.ArkTS': { JSON } });
 const lifecycleModule = load('proxy_core/src/main/ets/rpc/VpnLifecycleState.ets', { './RpcContract.generated': rpcGenerated });
 const activationModule = load('entry/src/main/ets/common/services/ConfigActivationService.ets');
+const coreMode = load('entry/src/main/ets/common/services/CoreMode.ts');
 const flush = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
 const deferred = () => { let resolve; const promise = new Promise(r => resolve = r); return { promise, resolve }; };
 const nodeOf = uri => yaml.parse(YamlUtils.convertUniversalToClashYaml(uri)).proxies[0];
@@ -696,6 +697,7 @@ function viewModelFixture(options = {}) {
   const calls = [], events = [];
   const { ClashViewModel } = load('entry/src/main/ets/entryability/ClashViewModel.ets', {
     '../common/services/ConfigActivationService': activationModule,
+    '../common/services/CoreMode': coreMode,
     'proxy_core/src/main/ets/rpc/RpcContract.generated': rpcGenerated,
     'proxy_core/src/main/ets/rpc/VpnLifecycleState': lifecycleModule,
     'proxy_core/src/main/ets/ProfileRepo': { ProfileRepo: class {} },
@@ -718,7 +720,7 @@ function viewModelFixture(options = {}) {
     '../common/utils/CardManageUtil': { cardManager: { pushCartProxyMode: state => calls.push(state ? 'runningCard' : 'stoppedCard'), pushCartVpnState: state => calls.push(state.running ? 'runningCard' : 'stoppedCard'), pushCartVpnServiceTime() {} } },
     '../common/utils/VpnNoticeConfigSync': { syncVpnNoticePrefs: async () => {} },
     '@kit.PerformanceAnalysisKit': { hilog: quiet }
-  }, { AppStorage: { setOrCreate() {}, get: () => ({ clashCore: 0 }) }, ...(options.time || {}) });
+  }, { AppStorage: { setOrCreate() {}, get: () => ({ clashCore: options.core ?? 0 }) }, ...(options.time || {}) });
   const service = new ClashViewModel(); service.loadConfig = async () => calls.push('loadConfig');
   service.loadVpnOptions = async () => calls.push('loadOptions');
   service.socketProxy.isSocketReady = async () => true;
@@ -1112,5 +1114,158 @@ test('URL import updates scheduling only after the database commit and always cl
     assert.deepEqual(calls, fails ? ['open', 'close', 'reset'] : ['open', 'commit', 'close', 'reset']);
     assert.equal(f.isConfigDownloading, false); assert.equal(f.appLinkConfigUrl, '');
     if (fails) { assert.ok(messages[0].includes('invalid YAML')); assert.ok(!messages[0].includes('private-stack')); assert.ok(!messages[0].includes('undefined')); }
+  }
+});
+
+test('Release startup routes saved and explicit foreground selections to the VPN extension', async () => {
+  for (const requested of [undefined, coreMode.ClashCore.ClashMeta]) {
+    const f = viewModelFixture({ debug: false, core: coreMode.ClashCore.ClashMeta });
+    f.service.context = { applicationInfo: { name: 'release.bundle' } };
+    assert.equal(await f.service.ChangeCore(requested), true);
+    const request = f.calls.find(c => Array.isArray(c) && c[0] === 'startExtension')[1];
+    assert.equal(request.parameters.ClashCore, coreMode.ClashCore.mihomo);
+    assert.ok(!f.calls.includes('startLocalCore'));
+  }
+});
+
+test('Release VPN extension initializes its core even when a stale want requests foreground mode', async () => {
+  for (const debug of [false, true]) {
+    const calls = [];
+    const mod = load('entry/src/main/ets/entryability/ClashVpnAbility.ets', {
+      '@kit.NetworkKit': { VpnExtensionAbility: class {} },
+      './AppState': { ClashCore: coreMode.ClashCore },
+      '../common/services/CoreMode': coreMode,
+      'BuildProfile': { default: { DEBUG: debug } },
+      '../common/utils/CardManageUtil': { cardManager: { init() {}, pushCartVpnState() {} } },
+      'proxy_core': { SocketStubService: class { async startService(id) { calls.push(id); } } }
+    });
+    const ability = new mod.default(); ability.context = {};
+    await ability.onCreate({ parameters: { ClashCore: 1, requestId: 42 } });
+    assert.deepEqual(calls, debug ? [] : [42]);
+  }
+});
+
+function sourceMethod(file, className, methodName) {
+  const input = fs.readFileSync(path.join(root, file), 'utf8');
+  const ast = ts.createSourceFile(file, input, ts.ScriptTarget.Latest, true);
+  const cls = ast.statements.find(n => ts.isClassDeclaration(n) && n.name.text === className);
+  return cls.members.find(m => m.name?.getText(ast) === methodName).getText(ast);
+}
+
+test('Loading persisted settings normalizes Release core mode without losing the selected profile', async () => {
+  const file = 'entry/src/main/ets/entryability/AppState.ets';
+  const method = sourceMethod(file, 'AppState', 'init');
+  for (const debug of [false, true]) {
+    const config = { clashCore: 1, currentProfileId: 'keep-profile', currentProxyName: 'keep-node' };
+    const store = new Map([['appConfig', config]]);
+    const { AppState } = load('AppStateInitFixture.ts', {}, {
+      BuildProfile: { DEBUG: debug }, resolveCoreMode: coreMode.resolveCoreMode,
+      AppConfig: class {}, ClashConfig: class {}, UIConfig: class {}, AppFlowingState: class {},
+      AppStorage: { get: k => store.get(k), set: (k, v) => store.set(k, v), setOrCreate: (k, v) => store.set(k, v) },
+      PersistentStorage: { persistProp: (k, v) => { if (!store.has(k)) store.set(k, v); } }
+    }, `export class AppState { static getAppProvisionType() {} ${method} }`);
+    await AppState.init();
+    assert.equal(store.get('appConfig').clashCore, debug ? 1 : 0);
+    assert.equal(store.get('appConfig').currentProfileId, 'keep-profile');
+    assert.equal(store.get('appConfig').currentProxyName, 'keep-node');
+  }
+});
+
+test('Backup restore applies the build core policy for both file and supplied backup inputs', async () => {
+  for (const debug of [false, true]) for (const fileInput of [false, true]) {
+    const config = { appConfig: { clashCore: 1, currentProfileId: 'profile' }, uiConfig: {}, clashConfig: {}, configList: [], configSort: '[]' };
+    const stored = new Map(), restored = [];
+    const mod = load('entry/src/main/ets/common/utils/BackupRestoreUtil.ets', {
+      'BuildProfile': { default: { DEBUG: debug } }, '../services/CoreMode': coreMode,
+      '../entity/utils': { getJsonArrayType: () => 'string' },
+      '../../entryability/ClashViewModel': { default: { addOrUpdateProfiles: async list => restored.push(list) } },
+      'xb_components': {
+        Xb_FileUtils: { openFile: async () => 'backup.json', importDataByFile: async () => config },
+        Xb_PreferenceUtil: { put: async () => {} }, Xb_ToastUtil: { showToast() {}, restartApp() {} }
+      }
+    }, { AppStorage: { set: (k, v) => stored.set(k, v) }, $r: k => k, ...clock() });
+    await mod.default.restore(fileInput ? null : config); await flush();
+    assert.equal(stored.get('appConfig').clashCore, debug ? 1 : 0);
+    assert.equal(stored.get('appConfig').currentProfileId, 'profile');
+    assert.equal(restored.length, 1);
+  }
+});
+
+test('Card settings normalize old foreground selections on read and write in Release', () => {
+  for (const debug of [false, true]) {
+    const { cardManager } = load('entry/src/main/ets/common/utils/CardManageUtil.ets', {
+      'BuildProfile': { default: { DEBUG: debug } }, '../services/CoreMode': coreMode,
+      '../../entryability/AppState': { AppConfig: class {} }
+    });
+    let saved = { clashCore: 1, currentProfileId: 'profile' };
+    cardManager.store = { getSync: () => ({ ...saved }), putSync: (_, v) => { saved = v; }, flushSync() {} };
+    assert.equal(cardManager.getAppConfig().clashCore, debug ? 1 : 0);
+    cardManager.setAppConfig({ clashCore: 1, currentProfileId: 'profile' });
+    assert.equal(saved.clashCore, debug ? 1 : 0); assert.equal(saved.currentProfileId, 'profile');
+  }
+});
+
+function kernelSettingsFixture({ debug = true, developerMode = false, stop = async () => {} } = {}) {
+  const src = fs.readFileSync(path.join(root, 'entry/src/main/ets/components/Settings/Kernel.ets'), 'utf8');
+  const methods = src.slice(src.indexOf('  async handleClick('), src.indexOf('  build()'));
+  const time = clock(), writes = [], messages = []; let stops = 0, exits = 0;
+  const { Fixture } = load('KernelSettingsFixture.ts', {}, {
+    ...time, BuildProfile: { DEBUG: debug }, ClashCore: coreMode.ClashCore, resolveCoreMode: coreMode.resolveCoreMode,
+    ClashViewModel: { StopVpn: async () => { stops++; await stop(); } },
+    AppStorage: { set: (_, config) => writes.push(config.clashCore) }, $r: k => k
+  }, `export class Fixture { ${methods} }`);
+  const instance = new Fixture();
+  Object.assign(instance, { developerMode, switching: false, appConfig: { clashCore: 0 },
+    promptAction: { showToast: m => messages.push(m.message) },
+    context: { getApplicationContext: () => ({ killAllProcesses() { exits++; } }) } });
+  return { instance, time, writes, messages, stops: () => stops, exits: () => exits };
+}
+
+test('Foreground mode is selectable only on the Debug developer page', async () => {
+  for (const debug of [false, true]) for (const developerMode of [false, true]) {
+    const f = kernelSettingsFixture({ debug, developerMode }); f.instance.aboutToAppear();
+    const available = debug && developerMode;
+    assert.deepEqual(Array.from(f.instance.kernel, row => row.core), available ? [0, 1] : [0]);
+    await f.instance.handleClick(1);
+    assert.equal(f.instance.appConfig.clashCore, available ? 1 : 0);
+    assert.equal(f.stops(), available ? 1 : 0);
+  }
+});
+
+test('Core selection waits for confirmed stop and rejects duplicate clicks; failed stop preserves settings', async () => {
+  const gate = deferred(), f = kernelSettingsFixture({ developerMode: true, stop: () => gate.promise });
+  const switching = f.instance.handleClick(1); await flush();
+  await f.instance.handleClick(1);
+  assert.equal(f.stops(), 1); assert.deepEqual(f.writes, []); assert.equal(f.time.timeouts.size, 0);
+  gate.resolve(); await switching;
+  assert.deepEqual(f.writes, [1]); assert.equal(f.exits(), 0);
+  [...f.time.timeouts.values()][0](); assert.equal(f.exits(), 1);
+  const failed = kernelSettingsFixture({ developerMode: true, stop: async () => { throw new Error('stop failed'); } });
+  await failed.instance.handleClick(1);
+  assert.equal(failed.instance.appConfig.clashCore, 0); assert.deepEqual(failed.writes, []);
+  assert.equal(failed.instance.switching, false); assert.equal(failed.time.timeouts.size, 0);
+  assert.deepEqual(failed.messages, ['stop failed']);
+});
+
+test('Debug settings insert developer options without redirecting clicks to data reset', () => {
+  const constants = fs.readFileSync(path.join(root, 'entry/src/main/ets/common/entity/Constants.ets'), 'utf8');
+  const start = constants.indexOf('export class settingsData');
+  const end = constants.indexOf('export class LanguageData');
+  const listSource = constants.slice(start, end);
+  const settings = fs.readFileSync(path.join(root, 'entry/src/main/ets/components/Settings/Settings.ets'), 'utf8');
+  const method = settings.slice(settings.indexOf('  handleCheck(index:'), settings.indexOf('  onLanguageChanged()'));
+  for (const debug of [false, true]) {
+    const { SettingsListItem } = load('SettingsListFixture.ts', {}, { $r: k => k, BuildProfile: { DEBUG: debug } }, listSource);
+    const list = SettingsListItem(), routes = []; let resets = 0;
+    assert.equal(list.some(x => x.name === 'DeveloperOptions'), debug);
+    const { Fixture } = load('SettingsClickFixture.ts', {}, { BuildProfile: { DEBUG: debug }, hilog: { ...quiet, isLoggable() {}, LogLevel: {} } },
+      `export class Fixture { ${method} }`);
+    const f = new Fixture(); Object.assign(f, { settingsList: list,
+      resetDialogController: { open() { resets++; } }, SettingsPageInfos: { pushPathByName: name => routes.push(name) } });
+    f.handleCheck(list.findIndex(x => x.name === 'WipeData')); assert.equal(resets, 1); assert.deepEqual(routes, []);
+    f.handleCheck(list.findIndex(x => x.name === 'About')); assert.deepEqual(routes, ['About']);
+    if (debug) { f.handleCheck(list.findIndex(x => x.name === 'DeveloperOptions')); assert.equal(routes[1], 'DeveloperOptions'); }
+    else { list.push({ name: 'DeveloperOptions' }); f.handleCheck(list.length - 1); assert.deepEqual(routes, ['About']); }
+    assert.equal(resets, 1);
   }
 });

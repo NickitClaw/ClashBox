@@ -1,6 +1,22 @@
 {
   "string": [
     {
+      "name": "foreground_core_title",
+      "value": "Foreground mode (mihomo)"
+    },
+    {
+      "name": "standard_core_description",
+      "value": "For everyday proxying, including while using other apps."
+    },
+    {
+      "name": "developer_options_subtitle",
+      "value": "Core debugging for Debug builds"
+    },
+    {
+      "name": "developer_options",
+      "value": "Developer options"
+    },
+    {
       "name": "module_desc",
       "value": "module description"
     },
@@ -1098,7 +1114,7 @@
     },
     {
       "name": "kernel_subtitle",
-      "value": "Switch clash kernel"
+      "value": "mihomo for everyday use"
     },
     {
       "name": "kernel",
@@ -1449,16 +1465,12 @@
       "value": "New Kernel"
     },
     {
-      "name": "open_core_prompt",
-      "value": "For more kernel options, please go to settings - about opening the \"experiment function\" option"
-    },
-    {
       "name": "switch_core_prompt",
-      "value": "Note: After switching the kernel, you need to restart the VPN service.After enabling the foreground mode, After enabling the foreground mode, go to the background operation option and select a simulated background function to start"
+      "value": "Changing the mode stops the VPN and closes the app. Reopen the app to start the VPN again."
     },
     {
       "name": "switch_core_foreground_prompt",
-      "value": "Make sure to enable the background running function, otherwise the proxy function will fail."
+      "value": "For debugging only. Switching apps or locking the screen may freeze the process and interrupt the proxy."
     },
     {
       "name": "loading",
@@ -1666,7 +1678,7 @@
     },
     {
       "name": "link_a",
-      "value": "The background management of the current system is very strict. It is recommended to turn on the notification and simulation background functions of the software during use to maintain the stable connection of the application running in the background"
+      "value": "Use standard mihomo mode for background proxying. If connections drop, check your network, selected node, and connection logs."
     },
     {
       "name": "node_q",
@@ -1954,7 +1966,7 @@
     },
     {
       "name": "qa_tips",
-      "value": "Special note: in case of frequent VPN disconnection, it is recommended to use the foreground mode+simulate the background to achieve a more stable operation of the agent. In addition, the picture in picture window can be reduced to the border."
+      "value": "Use standard mihomo mode for everyday proxying. Foreground mode is available only in Debug builds and is unsuitable for continuous background use."
     },
     {
       "name": "overwrite_dns_subtitle",

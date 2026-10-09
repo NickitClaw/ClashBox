@@ -27,6 +27,7 @@ import { PageMargin } from "../../common/breakpoint/BreakPoint"
 import { UpdateLog } from '../Start/UpdateLog';
 import { EventHub, EventKey } from '../../common/EventHub';
 import { Xb_ToastUtil } from 'xb_components';
+import BuildProfile from 'BuildProfile';
 
 
 @Entry
@@ -185,12 +186,14 @@ struct Settings {
   }
 
   handleCheck(index: number) {
-    if(index == (6)) {
+    const itemSettingsData = this.settingsList[index]
+    if (!itemSettingsData) return
+    if (itemSettingsData.name === 'DeveloperOptions' && !BuildProfile.DEBUG) return
+    if (itemSettingsData.name === 'WipeData') {
       // 清空应用设置弹窗
       this.resetDialogController.open()
     } else {
       // 列表项路由跳转
-      const itemSettingsData = this.settingsList[index]
       this.SettingsPageInfos.pushPathByName(itemSettingsData.name, false)
       hilog.isLoggable(0xFF00, "SettingstestTag", hilog.LogLevel.INFO);
       hilog.info(0xFF00, "SettingstestTag", itemSettingsData.name)
@@ -254,6 +257,9 @@ struct Settings {
       } else
       if (name == 'Kernel') {
         Kernel()
+      } else
+      if (name == 'DeveloperOptions' && BuildProfile.DEBUG) {
+        Kernel({ developerMode: true })
       } else
       if (name == 'FAQ') {
         FAQ()

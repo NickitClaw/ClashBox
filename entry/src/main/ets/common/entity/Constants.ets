@@ -8,6 +8,7 @@ import { BreakpointState } from "../breakpoint/breakpointsystem";
 import { UpdateInfo } from "../utils/CheckUpdateUtil";
 import { ConfigData, HomeCardInfo } from "./PageArgumentEntity";
 import { PCTabInfo } from "./PCTabInfo";
+import BuildProfile from 'BuildProfile';
 
 
 /* 基础 */
@@ -610,6 +611,10 @@ export const SettingsListItem = (): settingsData[] => {
     new settingsData($r('sys.symbol.person_shield_fill'), 'agreement-privacy', $r('app.string.agreement_privacy'), '', '', false),
     new settingsData($r('sys.symbol.info_circle'), 'About', $r('app.string.About'), '', '', false),
   ]
+  if (BuildProfile.DEBUG) {
+    result.splice(6, 0, new settingsData($r('sys.symbol.info_circle'), 'DeveloperOptions',
+      $r('app.string.developer_options'), $r('app.string.developer_options_subtitle'), '', false))
+  }
   return result
 }
 

@@ -1,6 +1,22 @@
 {
   "string": [
     {
+      "name": "foreground_core_title",
+      "value": "前台模式 (mihomo)"
+    },
+    {
+      "name": "standard_core_description",
+      "value": "用於日常代理，切換應用程式後仍可運行。"
+    },
+    {
+      "name": "developer_options_subtitle",
+      "value": "Debug 版本專用的核心偵錯"
+    },
+    {
+      "name": "developer_options",
+      "value": "開發者選項"
+    },
+    {
       "name": "module_desc",
       "value": "模組描述"
     },
@@ -1106,7 +1122,7 @@
     },
     {
       "name": "kernel_subtitle",
-      "value": "切換Clash核心"
+      "value": "mihomo 日常代理"
     },
     {
       "name": "query_ip_region_placeholder",
@@ -1449,16 +1465,12 @@
       "value": "新核心"
     },
     {
-      "name": "open_core_prompt",
-      "value": "如需查看更多核心選項，請前往設定-關於，開啟「實驗功能」選項"
-    },
-    {
       "name": "switch_core_prompt",
-      "value": "注意：切換核心後需要重啟VPN服務，啟用前臺模式後自行去後臺運行選項裏面選擇一個模擬後臺功能啟動"
+      "value": "切換運行模式會先停止 VPN，然後退出應用程式。請重新開啟應用程式後啟動 VPN。"
     },
     {
       "name": "switch_core_foreground_prompt",
-      "value": "註意要開啟後臺運行功能，否則代理功能失效"
+      "value": "僅供偵錯。切換至其他應用程式或鎖定螢幕後，代理可能因程序被凍結而中斷。"
     },
     {
       "name": "loading",
@@ -1674,7 +1686,7 @@
     },
     {
       "name": "link_a",
-      "value": "當前系統的前台管理非常嚴格，建議使用過程中開啟軟體的通知及模擬後台功能，以保持應用在前台運行的連接穩定"
+      "value": "日常使用請選擇普通 mihomo 模式，應用程式退至背景後代理仍可運行。如遇斷線，請檢查網絡、節點及連線記錄。"
     },
     {
       "name": "node_q",
@@ -1954,7 +1966,7 @@
     },
     {
       "name": "qa_tips",
-      "value": "特別提示：如發生經常性VPN斷線問題，建議使用「前台模式 + 模擬後台」實現代理較穩定運作，另外子母畫面小視窗可縮小至邊框呀"
+      "value": "日常使用請選擇普通 mihomo 模式。前台模式僅供 Debug 版本偵錯，不適合持續背景代理。"
     },
     {
       "name": "overwrite_dns_subtitle",

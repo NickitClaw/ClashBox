@@ -7,6 +7,9 @@ import { bundleManager } from "@kit.AbilityKit";
 import { EventHub, EventKey } from "../common/EventHub";
 import { CustomThemeName } from "xb_components/src/main/ets/utils/AppThemeManager";
 import { TabStyle, Xb_PreferenceUtil } from "xb_components";
+import BuildProfile from 'BuildProfile';
+import { ClashCore, resolveCoreMode } from '../common/services/CoreMode';
+export { ClashCore } from '../common/services/CoreMode';
 
 export enum ProxyGroupType {
   Tabs,
@@ -22,12 +25,6 @@ export enum SwitchModeCard{
   Global ="GLOBAL",
   Rule = "RULE",
   Direct = "DIRECT"
-}
-export enum ClashCore {
-  mihomo,
-  // 非mihomo用于开发调试， ui进程运行vpn核心；调试vpn核心崩溃和杀进程问题
-  ClashMeta,
-  ClashRs,
 }
 export class AppFlowingState{
   traffics: TrafficQueue = new TrafficQueue(12)
@@ -196,6 +193,11 @@ export class AppState {
   static async init() {
 
     PersistentStorage.persistProp("appConfig", new AppConfig())
+    const appConfig = AppStorage.get<AppConfig>('appConfig')
+    if (appConfig) {
+      appConfig.clashCore = resolveCoreMode(appConfig.clashCore, BuildProfile.DEBUG)
+      AppStorage.set('appConfig', appConfig)
+    }
     PersistentStorage.persistProp("favoriteProfiles", new Map<string, string>([]))
     PersistentStorage.persistProp("favoriteProxys", new Map<string, string[][]>([]))
 
