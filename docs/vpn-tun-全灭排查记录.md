@@ -4,6 +4,8 @@
 
 > 源码复核（基于 `bca0e528`）：本次保留新增的现场日志和计数，修正其解释。Mixed 的 TCP 走 System、UDP 走 gVisor channel；`[TCP] ... using GLOBAL` 出现在出站拨号成功返回之后。现有证据尚不能将全灭归因为 gVisor FD 读取循环退出，详见 §8。
 
+> 2026-10-09 下午真机复测：确认一种可重复的断网原因——手机使用“前台模式(mihomo)”，核心随 UI 进程在后台被冻结；改用 VPN 扩展进程运行的普通 mihomo 后，同一安装包的后台 DIRECT 请求及浏览器 HTTPS 恢复。系统 freezer 状态、成对请求及适用范围见 §10；不据此追认之前全部故障窗口属于同一原因。
+
 ## 0. 故障时的 TUN 协议栈：Mixed（默认）
 
 **运行栈 = 覆写配置里的 `TunStack` 值，默认 `Mixed`**（`proxy_core/src/main/ets/models/ClashConfig.ts:191`，UI 选项在 `Constants.ets:545-547`），wrapper 经 `common.go:246`（`targetConfig.Tun.Stack = patchConfig.Tun.Stack`）透传给内核。排查期间该设置未改动，故故障时栈为 Mixed：
@@ -307,3 +309,65 @@ dial / protect / relay / TUN 错误与事件（未采集项注明）：
 ```
 
 只有基础 DIRECT 的 TUN/7890 对照、协议栈对照及相应错误证据齐备后，才将候选机制提升为根因；真实网页恢复与修复后的回归结果另行记录，不以构建成功或 mock 测试通过替代。
+
+## 10. 2026-10-09 真机复测：前台核心被后台冻结
+
+### 10.1 本次安装包与测试条件
+
+- 时间：2026-10-09 17:38–18:01，Asia/Shanghai；设备 HOP-AL10，HarmonyOS `7.0.0.109(SP6C00E105R6P4)`，API 26，Wi-Fi。
+- 测试现有已签名 debug 应用 `org.xbgroup.clashboxLTS`，版本 `1.7.4` / `1007047`；本次未重编、签名或安装新 HAP。
+- 从应用沙箱读取实际安装的 HAP，SHA-256：`0822dfe2e33ff97ab1b1aa2acb37e5094551f958acefea17a8532f1c02221856`。
+- 安装包内和设备解压目录的 `libflclash.so` 摘要一致：`24eb2cb2491f7b37f3b07406d0f8f4a5ad8f71836c9907a67e160f16067ef643`。它与本地库 `aeb9f41bf7fd3395113c71e5f6aeec02f336f85cf391ddf629812aa7c1b8e44e` 不同。二者 Go build info 均记载 `2e18ae5d...`、`vcs.modified=true`；不能据此认定设备运行的未提交源码与当前仓库完全一致。
+- 初始持久化配置：`clashCore=1`，即“前台模式(mihomo)”；RULE、Mixed、MTU 1400、IPv6 关闭、应用访问控制关闭。测试切换到 DIRECT，日志确认 `using DIRECT`；系统网卡实测 MTU 1400。Mixed 根据设置与代码映射判定，未取得原生运行时 stack 快照。
+- 核心运行位置 A/B 测试保持同一 HAP、Wi-Fi、DIRECT、协议栈设置及目标不变，仅通过设置切换核心运行模式并按要求重启应用。
+
+### 10.2 证据链
+
+先使用电脑上的受控 HTTP 服务建立网络基线。VPN 关闭时，手机浏览器显示约 1 KiB 测试正文；VPN 开启后局域网页面仍可访问，但没有该浏览器连接进入 TUN 的证据，**这项结果不计为 TUN 通过**。
+
+随后改用无需 DNS 的公网目标 `http://119.29.29.29/`，每次附加不同查询参数。该地址正常返回 HTTP 404 和 174 字节 HTML；本测试检查能否完整取得这个预期响应，404 不代表网络连接失败。
+
+| 核心运行方式 / 阶段 | 系统状态及请求结果 | 结论 |
+|---|---|---|
+| 前台模式，刚进入浏览器 | 核心 PID 64474；日志出现 `[TCP] 172.19.0.1:33846 --> 119.29.29.29:80 using DIRECT`，浏览器显示预期 404 正文；同时经 hdc 转发 7890 请求收到 174 字节，约 0.085 秒 | 该时刻 TUN 与普通代理入站均能完成 HTTP 传输 |
+| 前台模式，退后台后 | 首次采样 `freezer:/Thawed`，7890 请求约 0.143 秒完成；约 10 秒时采样已为 `freezer:/Frozen`，随后多次请求均达到 4 秒超时且接收 0 字节；独立请求也复现 12 秒超时 | 核心所在 UI 进程被冻结，普通代理入口也停止响应；不是只有 TUN 入口失效 |
+| 将 ClashBox 带回前台 | 相同公网 IP 经 7890 恢复，174 字节、约 0.150 秒 | 恢复与核心宿主进程回前台相关 |
+| 切普通 mihomo，退后台 | UI PID 8304 在约 10 秒时进入 `freezer:/Frozen`；核心移至 VPN 扩展 PID 8531，`freezer:/`。后台 0 / 10 / 25 / 约 42 秒的四次请求均返回预期 174 字节，耗时约 0.108–0.192 秒 | UI 冻结不再阻断扩展进程内的核心 |
+| 普通 mihomo，实际网页 | UI 仍被冻结时，浏览器正常显示百度 HTTPS 页面；核心日志记录源地址 `172.19.0.1` 到 `www.baidu.com:443` 的 DIRECT 连接。经 7890 的 HTTPS 对照为 HTTP 200、2443 字节、约 0.269 秒 | 后台运行、浏览器 TUN、域名和 HTTPS 的组合恢复；未独立隔离 DNS 与 TLS 各步骤 |
+| 普通 mihomo，手机自动锁屏后 | 经 7890 请求 `https://example.com/` 返回 HTTP 200、577 字节、约 1.033 秒；UI 保持 Frozen、VPN 扩展未被冻结 | 补充短时锁屏下的普通代理入口证据；系统拒绝锁屏启动浏览器，故不计作该网站的浏览器 TUN 验证 |
+
+公网 IPv4 浏览器测试的同一 TUN 实例计数为 RX 520 B / 5 包 → 30545 B / 145 包，TX 520 B / 5 包 → 30497 B / 145 包，errors/drops 均为 0。窗口内有其他系统流量，这些总量仅作辅助证据；目标归属以连接日志和浏览器正文为准。未将跨重启的网卡计数相减。
+
+### 10.3 源码对应与结论范围
+
+- `entry/src/main/ets/entryability/AppState.ets` 中 `ClashCore.ClashMeta=1`，注释明确其用于在 UI 进程运行核心进行开发调试；**复测时 `AppConfig.clashCore` 默认值也是这一模式**，后续修复见 §10.5。
+- `ClashViewModel.ets` 的 `startCore()` 在非 `mihomo` 模式调用 `startLocalCore()`，由 UI 上下文创建服务；`ClashVpnAbility.ets` 则只在 `mihomo` 模式中创建 `SocketStubService`。
+- 系统 freezer 状态、失败/恢复请求、同包切换核心宿主进程的对照一致，足以确认**本次后台断网复现**由前台核心进程被冻结造成。无需以“Mixed/gVisor 读循环退出”解释本次现象。
+- 本次没有验证 GLOBAL 节点出站、gVisor A/B、IPv6、大包、5 分钟锁屏、Wi-Fi/蜂窝切换或完整启停矩阵；之前节点 connect 超时及其他故障窗口仍需独立确认。
+- 启动前还遇到过一次代理列表 RPC 在收到完整响应前关闭，界面因此误判节点未加载；重启应用后恢复。现有证据不足以确认它与冻结共因，应作为独立的 IPC/启动稳定性问题跟进。
+
+默认值修复见 §10.5；后续仍应明确前台调试模式的入口及升级迁移策略，并补 UI 冻结后的真实转发回归。单纯延长 IPC 超时或依赖 UI 内的定时器不能使被冻结的进程继续处理网络。
+
+### 10.4 结果与证据位置
+
+本次完成 T00 的局域网基线、T01/T02 的公网小响应对照，以及 T09 中“退后台”的失败复现和切模式恢复对照；T05 取得实际 HTTPS 网页恢复证据。上述均为限定场景结果，不将 §9 中的完整测试项统一标为通过。
+
+本次真机诊断结束时已恢复 RULE 并关闭测试 VPN，确认 `vpn-tun` 消失；保留已验证的普通 mihomo 模式，持久化值为 `clashCore=0`。诊断阶段未修改程序代码。
+
+原始证据保存在本机 `.research/device-20261009/`（Git 忽略，不提交原始订阅、完整沙箱数据或系统日志）：
+
+- `background-timeline.jsonl`、`regular-background-timeline.jsonl`：前台模式与普通模式的 freezer / HTTP 连续样本。
+- `T01-public-browser.jpeg`、`T05-baidu-browser.jpeg`、`T05-regular-baidu.jpeg`：初始 IPv4 成功、后台失败和切普通模式后的 HTTPS 恢复。
+- `T01-public-before.txt`、`T01-public-after.txt`：同一测试窗口网卡计数。
+- `native-live.log`、`target-connection-evidence.log`：核心日志和目标连接摘录。
+- `entry-installed.hap`、`libflclash-device.so`、`native-buildinfo-device.txt`：实际安装制品与构建元信息。
+
+### 10.5 默认模式修复与用户补测
+
+用户于 2026-10-09 补充自测结果：切换普通 mihomo 模式、开启 VPN 并选择正确节点后，可以访问国外网站。这是用户对现有安装包的实际使用验证；未提供具体分流模式、节点、目标或连接日志，不将它等同于 T08 的完整 GLOBAL 对照测试。
+
+已将 `AppConfig.clashCore` 默认值改为 `ClashCore.mihomo`，新配置默认由 VPN 扩展进程运行核心。启动参数和核心启动入口缺失配置时原本已回退到 mihomo，本次统一了配置对象的默认值。
+
+已持久化或从备份恢复的核心选择继续保留；旧配置仍为前台模式的用户，需要在“设置 → 内核”选择普通 mihomo 并重启应用。现有数据没有记录前台模式来自旧默认值还是用户主动选择，本次未强制覆盖已有选择。前台模式仍可用于显式调试。
+
+修复后 `npm run check` 通过：80 项逻辑回归、Go 帧协议/契约竞态测试、RPC 生成检查和原生库 provenance 检查均通过。`devecocli build --modules entry --build-mode debug` 构建未签名 HAP 成功；该新包尚未安装到真机，以上真机证据来自现有签名包切换普通模式后的验证。

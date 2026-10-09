@@ -55,7 +55,8 @@ export class AppConfig {
   enableConnect: boolean = false
   accessControl: boolean = false
   testUrl: string = "https://www.gstatic.com/generate204"
-  clashCore: ClashCore = ClashCore.ClashMeta
+  // 核心默认由 VPN 扩展进程运行，避免 UI 退到后台被冻结后中断转发。
+  clashCore: ClashCore = ClashCore.mihomo
   switchMode: ProxyMode = ProxyMode.Rule
   constructor() {
   }
