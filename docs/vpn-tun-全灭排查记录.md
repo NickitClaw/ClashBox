@@ -2,6 +2,30 @@
 
 > 记录于 2026-10-06 ~ 2026-10-09。本文档沉淀一次"开启 VPN 后国内外网站全部打不开"问题的完整排查过程、已排除的假设、已修复的问题和当前最强嫌疑点，供后续开发者继续。
 
+## 0. 故障时的 TUN 协议栈：Mixed（默认）
+
+**运行栈 = 覆写配置里的 `TunStack` 值，默认 `Mixed`**（`proxy_core/src/main/ets/models/ClashConfig.ts:191`，UI 选项在 `Constants.ets:545-547`），wrapper 经 `common.go:246`（`targetConfig.Tun.Stack = patchConfig.Tun.Stack`）透传给内核。排查期间该设置未改动，故故障时栈为 Mixed：
+
+- **TCP → gVisor 用户态栈**（即 §5.1 dispatchLoop 所在栈，嫌疑区域）
+- **UDP → system（宿主机网络栈转发）**
+- 订阅 YAML 无 `tun:` 段时的内核兜底默认是 `TunGvisor`（`core/config/config.go:546`），但被 UI 的 Mixed 覆盖。
+
+佐证日志：故障窗口同时存在 `[TCP] 172.19.0.1:x --> www.youtube.com:443 using GLOBAL`（走 gVisor）和 `[UDP] 172.19.0.1:60265 --> www.youtube.com:443 using GLOBAL`（QUIC/HTTP3，走 system 转发）两类记录，与 Mixed 语义一致。
+
+## 0.1 故障窗口的计数器与内核错误日志（同一会话采集）
+
+/proc/net/dev 列含义：`iface: rx_bytes rx_pkts rx_errs rx_drop ... tx_bytes tx_pkts tx_errs tx_drop ...`
+
+| 时间 | 状态 | vpn-tun 计数 | 解读 |
+|---|---|---|---|
+| 00:55（香港03，**工作正常**） | 代理出站到 HK，IP 卡显示出口 | RX 2876951B/5007p/0err；TX 2878955B/5009p/**603 drop** | **tx_drop=603**：协议栈发包进 TUN 驱动但读端（gVisor dispatchLoop）丢弃/消费不掉——读端异常的直接信号，与 §5.1 吻合 |
+| 01:19（全灭） | 浏览器全灭 | — | 内核错误日志 3 连：`dial GLOBAL 172.19.0.1:x --> www.peopleapp.com:443 error: 38.135.55.228:44949 connect error: dial tcp: i/o timeout`（protect ok=true 前提下的节点 connect 超时） |
+| 01:32（全灭，全局模式） | 浏览器全灭 | — | `[TCP] 172.19.0.1:46718 --> www.youtube.com:443 using GLOBAL`（连接进入并被路由），其后**无 dial 错误也无完成记录**——拨号静默挂起 |
+| 01:35~01:39 | 埋点观测 | 重启后 RX 648B/10p（新 TUN） | protect `hook fire/ack ok=true` 全绿（fd 119~178）；wlan0 TX 90s +181 包（物理发包正常）；无节点拨号错误 |
+| 01:41（仍全灭） | 浏览器全灭 | — | 再次出现 youtube 的 TCP+UDP using GLOBAL 记录，依旧无后续完成 |
+
+关键区分：**01:19 的错误是"内核→节点"的 connect 超时，01:32/01:41 是"进入内核后无声息"**——前者指向节点/网络时段性问题，后者指向 TUN 数据面静默。
+
 ## 1. 现象与时间线
 
 - 订阅导入（SSR 分享链接）→ 启动 VPN（授权通过、TUN 建立、状态栏 VPN 图标正常）→ **浏览器打开任何网站（国内 qq/taobao、国外 youtube/google）都卡在加载页，直连模式下同样失败**。
@@ -68,7 +92,9 @@ func (e *endpoint) dispatchLoop(inboundDispatcher linkDispatcher) tcpip.Error {
 
 **任何一次读包错误或 cont=false 都会永久退出 TUN 读取循环**——之后 App 包进 TUN 但无人处理，表现为"显示运行但全灭"。上游 issue #158 的候选修复正是针对它："为 TUN 读取增加 100 毫秒轮询，并避免单个异常包使整个读取循环退出"（基于 likuai2010/gvisor-ohos 的 ohos 分支，候选提交 2d619610）。
 
-**当前内核 pin 的是 MetaCubeX/gvisor@79317d80，不含此修复**。真机上曾观察到 `vpn-tun` 网卡 RX errors 603——读包错误真实存在。
+**当前内核 pin 的是 MetaCubeX/gvisor@79317d80，不含此修复**。故障期间实际栈为 **Mixed**（§0）：TCP 走 gVisor 恰落在此循环上；且 §0.1 的 `tx_drop=603` 说明读端丢包真实发生。
+
+关联可疑点：内核默认 `RecvMsgX: true / SendMsgX: false`（`core/config/config.go:551-552`），fdbased 端点按此对 tun fd 用 recvmsg/readv 变体——鸿蒙 netmanager 下发的 tun fd 未必完整支持这些变体，一旦 `dispatch()` 返回错误即触发上述退出。这是把"OHOS 特有性"引进 dispatchLoop 的具体机制候选。
 
 下一步建议：把 likuai2010/gvisor-ohos 的 ohos 分支读取容错逻辑 cherry-pick 进当前 gvisor pin（或把 pin 换回含修复的分支），重编内核验证。
 
