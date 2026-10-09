@@ -2,15 +2,18 @@
 
 > 记录于 2026-10-06 ~ 2026-10-09。本文档沉淀一次"开启 VPN 后国内外网站全部打不开"问题的完整排查过程、已排除的假设、已修复的问题和当前最强嫌疑点，供后续开发者继续。
 
+> 源码复核（基于 `bca0e528`）：本次保留新增的现场日志和计数，修正其解释。Mixed 的 TCP 走 System、UDP 走 gVisor channel；`[TCP] ... using GLOBAL` 出现在出站拨号成功返回之后。现有证据尚不能将全灭归因为 gVisor FD 读取循环退出，详见 §8。
+
 ## 0. 故障时的 TUN 协议栈：Mixed（默认）
 
 **运行栈 = 覆写配置里的 `TunStack` 值，默认 `Mixed`**（`proxy_core/src/main/ets/models/ClashConfig.ts:191`，UI 选项在 `Constants.ets:545-547`），wrapper 经 `common.go:246`（`targetConfig.Tun.Stack = patchConfig.Tun.Stack`）透传给内核。排查期间该设置未改动，故故障时栈为 Mixed：
 
-- **TCP → gVisor 用户态栈**（即 §5.1 dispatchLoop 所在栈，嫌疑区域）
-- **UDP → system（宿主机网络栈转发）**
+- **TCP → System 的地址/端口改写与本地 TCP listener**。
+- **UDP → gVisor 用户态栈，使用 channel endpoint**。
+- TUN 读取由 `Mixed.tunLoop` 执行；上述两条路径均不使用 §5.1 的 gVisor `fdbased.dispatchLoop`。依据是当前实际依赖 [sing-tun v0.4.24 的 stack_mixed.go](https://github.com/MetaCubeX/sing-tun/blob/v0.4.24/stack_mixed.go)：`NewMixed` 嵌入 System，`Start` 创建 channel 并注册 UDP forwarder，TCP 分支调用 `processIPv4TCP`/`processIPv6TCP`。
 - 订阅 YAML 无 `tun:` 段时的内核兜底默认是 `TunGvisor`（`core/config/config.go:546`），但被 UI 的 Mixed 覆盖。
 
-佐证日志：故障窗口同时存在 `[TCP] 172.19.0.1:x --> www.youtube.com:443 using GLOBAL`（走 gVisor）和 `[UDP] 172.19.0.1:60265 --> www.youtube.com:443 using GLOBAL`（QUIC/HTTP3，走 system 转发）两类记录，与 Mixed 语义一致。
+故障窗口同时存在 `[TCP] 172.19.0.1:x --> www.youtube.com:443 using GLOBAL` 和 `[UDP] 172.19.0.1:60265 --> www.youtube.com:443 using GLOBAL`。这些是 mihomo 公共连接处理层的日志，本身不区分 System/gVisor/Mixed；UDP 443 也不能单凭端口确认具体应用协议。Mixed 的判定依据是上述配置及验证者报告的设置未改动。
 
 ## 0.1 故障窗口的计数器与内核错误日志（同一会话采集）
 
@@ -18,13 +21,13 @@
 
 | 时间 | 状态 | vpn-tun 计数 | 解读 |
 |---|---|---|---|
-| 00:55（香港03，**工作正常**） | 代理出站到 HK，IP 卡显示出口 | RX 2876951B/5007p/0err；TX 2878955B/5009p/**603 drop** | **tx_drop=603**：协议栈发包进 TUN 驱动但读端（gVisor dispatchLoop）丢弃/消费不掉——读端异常的直接信号，与 §5.1 吻合 |
+| 00:55（香港03，记录为工作正常） | 代理出站到 HK，IP 卡显示出口；未附浏览器请求结果 | RX 2876951B/5007p/0err；TX 2878955B/5009p/**603 drop** | 累计 **TX dropped=603**，不是此前记录的 RX errors。只能证明该计数曾增长，不能确定丢包发生时刻、原因或读取循环已退出 |
 | 01:19（全灭） | 浏览器全灭 | — | 内核错误日志 3 连：`dial GLOBAL 172.19.0.1:x --> www.peopleapp.com:443 error: 38.135.55.228:44949 connect error: dial tcp: i/o timeout`（protect ok=true 前提下的节点 connect 超时） |
-| 01:32（全灭，全局模式） | 浏览器全灭 | — | `[TCP] 172.19.0.1:46718 --> www.youtube.com:443 using GLOBAL`（连接进入并被路由），其后**无 dial 错误也无完成记录**——拨号静默挂起 |
-| 01:35~01:39 | 埋点观测 | 重启后 RX 648B/10p（新 TUN） | protect `hook fire/ack ok=true` 全绿（fd 119~178）；wlan0 TX 90s +181 包（物理发包正常）；无节点拨号错误 |
-| 01:41（仍全灭） | 浏览器全灭 | — | 再次出现 youtube 的 TCP+UDP using GLOBAL 记录，依旧无后续完成 |
+| 01:32（全灭，全局模式） | 浏览器全灭 | — | `[TCP] 172.19.0.1:46718 --> www.youtube.com:443 using GLOBAL`；代码在出站 DialContext 成功返回后打印此行，不能解释为拨号挂起；其后传输结果未知 |
+| 01:35~01:39 | 埋点观测 | 重启后 RX 648B/10p（新 TUN） | protect `hook fire/ack ok=true` 全绿（fd 119~178）；wlan0 TX 90s +181 包；只能证明接口总流量增长，未按目标连接归属，不能证明该节点或网页收到数据 |
+| 01:41（仍全灭） | 浏览器全灭 | — | 再次出现 youtube 的 TCP+UDP using GLOBAL 记录；TCP 拨号已返回成功，UDP 出站 PacketConn 已创建，均不代表网页响应已收到 |
 
-关键区分：**01:19 的错误是"内核→节点"的 connect 超时，01:32/01:41 是"进入内核后无声息"**——前者指向节点/网络时段性问题，后者指向 TUN 数据面静默。
+关键区分：**01:19 是到节点的 TCP connect 超时；01:32/01:41 的 TCP 记录已越过拨号阶段，后续转发结果未知。** 当前记录跨越重启和多个时间段，缺少单次请求的计数增量，不能合并推导为同一故障机制。
 
 ## 1. 现象与时间线
 
@@ -59,21 +62,21 @@ TUN 模式下系统 DNS 指向内核自己（172.19.0.2），无 `dns:` 段时 D
 
 ### 3.4 TUN 协议栈 MTU 硬编码 9000（commit 01763b53）
 
-`proxy_core/src/flclash/tun/tun.go` 创建 gVisor sing_tun 监听器时 `MTU: 9000`，而系统 vpn-tun 网卡 MTU=1400（ArkTS `FlClashVpnService.ets:229`）。下行大包被系统网卡丢弃 → **ICMP 小包正常、TCP 全部卡死**，是本问题的典型表象。已改为 `state.CurrentState.Mtu`（默认 1400，越界兜底 1400）。
+`proxy_core/src/flclash/tun/tun.go` 创建 sing_tun 监听器时 `MTU: 9000`，而系统 vpn-tun 网卡 MTU=1400（ArkTS `FlClashVpnService.ets:229`）。这是已确认的配置不一致，可能影响大包传输，但尚不能证明它是 TCP 全灭的唯一根因。已改为 `state.CurrentState.Mtu`（默认 1400，越界兜底 1400）。
 
 **但注意：修复后真机矩阵仍未通过（见 §5 当前嫌疑点）。**
 
-## 4. 已排除的假设（有证据，别再重复查）
+## 4. 已有验证及证据边界
 
-1. **protect 链路正常**：在 `lib_linux.go initSocketHook` 加埋点后，内核每个出站 fd 都 `hook fire → ack ok=true`（ArkTS `FlClashVpnService.startClash` 的 NAPI `startTun(tunFd, callback)` 回调 → `connection.protect(fd)` → `setFdMap`）。
-2. **无回环**：若 protect 失效，节点 SYN 会回环进 TUN，日志会出现 `[TCP] 172.19.0.1:xxx --> <节点IP>:<port> using GLOBAL`——实际**没有**此类记录。
+1. **已观察到 protect 成功确认**：在 `lib_linux.go initSocketHook` 加埋点后，记录中的出站 fd 都 `hook fire → ack ok=true`（ArkTS `FlClashVpnService.startClash` 的 NAPI `startTun(tunFd, callback)` 回调 → `connection.protect(fd)` → `setFdMap`）。它证明该次保护调用完成，不证明其后目标响应一定可达。
+2. **未观察到节点地址的 using GLOBAL 日志**：实际没有 `[TCP] 172.19.0.1:xxx --> <节点IP>:<port> using GLOBAL` 一类记录。但这条日志需要出站拨号成功才打印，因此它的缺失不能彻底排除 SYN 回环。
 3. **GEOSITE/GEOIP 数据加载正常**：内核日志 `Finished initial GeoSite rule cn => DIRECT, records: 120120`，geo 文件在 `filesDir/ClashBox/`（mihomo HomeDir）。
 4. **节点可达**：VPN 关闭时手机浏览器直连节点 IP:44949 返回 `ERR_EMPTY_RESPONSE`（TCP 已连通，SSR 端口对 HTTP 垃圾数据关连接）；Mac 同网络 `nc -vz` 也通。
 5. **订阅转换产物正确**：模拟器上经内核 mixed 口实测（见 §6.3），国内外分流全对。
 
 ## 5. 当前最强嫌疑点（未闭环）
 
-### 5.1 gVisor dispatchLoop 单点退出（最可疑）
+### 5.1 gVisor dispatchLoop 单点退出（不在此次 Mixed 的执行路径中）
 
 `gvisor-ohos/pkg/tcpip/link/fdbased/endpoint.go:888`：
 
@@ -92,11 +95,11 @@ func (e *endpoint) dispatchLoop(inboundDispatcher linkDispatcher) tcpip.Error {
 
 **任何一次读包错误或 cont=false 都会永久退出 TUN 读取循环**——之后 App 包进 TUN 但无人处理，表现为"显示运行但全灭"。上游 issue #158 的候选修复正是针对它："为 TUN 读取增加 100 毫秒轮询，并避免单个异常包使整个读取循环退出"（基于 likuai2010/gvisor-ohos 的 ohos 分支，候选提交 2d619610）。
 
-**当前内核 pin 的是 MetaCubeX/gvisor@79317d80，不含此修复**。故障期间实际栈为 **Mixed**（§0）：TCP 走 gVisor 恰落在此循环上；且 §0.1 的 `tx_drop=603` 说明读端丢包真实发生。
+**当前内核 pin 的是 MetaCubeX/gvisor@79317d80**。但故障期间报告使用 **Mixed**（§0），不经过该 FD 读取循环，因此不能以此解释当前现场，也不能据 `tx_drop=603` 推断该循环退出。
 
-关联可疑点：内核默认 `RecvMsgX: true / SendMsgX: false`（`core/config/config.go:551-552`），fdbased 端点按此对 tun fd 用 recvmsg/readv 变体——鸿蒙 netmanager 下发的 tun fd 未必完整支持这些变体，一旦 `dispatch()` 返回错误即触发上述退出。这是把"OHOS 特有性"引进 dispatchLoop 的具体机制候选。
+`RecvMsgX` 的关联推断也不成立：wrapper 的 `tun/tun.go` 重新构造 `LC.Tun`，没有透传该字段；sing-tun 的 `EXP_RecvMsgX` 对应 Mixed 的 Darwin 批量读取分支，不是 gVisor `PacketDispatchMode`。后者在 `fdbased/endpoint.go:createInboundDispatcher` 中默认 Readv，另行根据 fd 类型和分派模式选择；不能从原始 YAML 默认值推出 OHOS Mixed 在使用 recvmsg/readv。
 
-下一步建议：把 likuai2010/gvisor-ohos 的 ohos 分支读取容错逻辑 cherry-pick 进当前 gvisor pin（或把 pin 换回含修复的分支），重编内核验证。
+下一步按 §8 定位拨号后的数据收发。若另行测试纯 gVisor 并捕获到对应读循环退出，再处理该路径的容错问题。
 
 ### 5.2 protect() 绑定物理网络的选择
 
@@ -104,7 +107,7 @@ func (e *endpoint) dispatchLoop(inboundDispatcher linkDispatcher) tcpip.Error {
 
 ### 5.3 干扰项（测试纪律）
 
-- **死节点**：104.243.39.45（德国06）ICMP 100% 丢包。机场订阅里 timeout 节点很多，**测试前必须先测速选活节点**，否则结论无效。
+- **节点可用性**：104.243.39.45（德国06）曾出现 ICMP 100% 丢包；ICMP 不响应本身不能证明 SSR TCP 端口不可用。测试前需用实际代理请求确认节点，并记录所选节点，避免把节点失败混入 TUN 结论。
 - 节点列表里混有"到期时间：2027-02-21"这类订阅信息伪节点，select 组默认第一个就是它——默认选中=全灭。建议转换器过滤无 server 的条目或选择器默认跳过。
 
 ## 6. 排查工具箱（都是实测可用的）
@@ -169,3 +172,138 @@ hvigorw assembleHap --mode module -p product=default -p buildMode=debug --no-dae
 python3 scripts/verify-hap.py entry/build/default/outputs/default/entry-default-signed.hap
 npm ci && npm test   # 80 个回归用例（鸿蒙 API mock）
 ```
+
+## 8. 基于新增现场记录的源码复核
+
+复核基线：父仓 `bca0e528`、core `2ee8e103`、gvisor `79317d80`、sing-tun `v0.4.24`。本节是源码与已有现场记录的交叉核对，未新增真机联网测试。
+
+### 8.1 using GLOBAL 是拨号成功之后的日志
+
+`proxy_core/src/flclash/core/tunnel/tunnel.go` 的 TCP 顺序：
+
+1. 第 591–624 行：调用出站 `proxy.DialContext`，执行必要的 early handshake；错误走 `logMetadataErr`。
+2. 第 625–628 行：错误直接返回；成功才调用 `logMetadata`，打印 `using GLOBAL`。
+3. 第 630–639 行：建立连接统计，结束可能还未完成的 peek，进入 `handleSocket` 双向转发。
+
+因此 01:32 和 01:41 对应的 TCP 连接已经越过出站拨号阶段。若连接来自浏览器 TUN 入站，Mixed 的本地 TCP listener 也已经接收了它；不能把这两条解释成“从启动起 TUN 一直无人读取”。这不排除稍后读循环停止或后续数据包转发失败。
+
+SSR 的 `adapter/outbound/shadowsocksr.go:68` 先连接节点，再执行协议包装及目标地址写入，最后返回出站连接；并不等待目标网站的 TLS/HTTP 响应。因此这条成功日志也不是网页已联网的证据。01:19 的 `connect error: dial tcp: i/o timeout` 则明确发生在到节点的 TCP 建连阶段，应与上述两次分开分析。
+
+UDP 的 `using GLOBAL` 在 `ListenPacketContext` 成功后打印，只证明出站 PacketConn 创建成功，不证明 UDP 目标有响应。
+
+### 8.2 “没有后续日志”不能判断阻塞位置
+
+- `core/tunnel/connection.go:handleSocket` 直接调用 `N.Relay`。
+- `core/common/net/sing.go:Relay` 的两个复制方向在出错时关闭连接，但不输出错误或常规完成日志。正常结束、读写失败和仍在等待，都可能没有后续 Info 日志。
+- `sing-tun/stack_mixed.go:87` 的 TCP 写回错误只走 Trace，mihomo 将其映射为 Debug，默认 Info 看不到。
+- 同文件 `packetLoop:272` 调用 UDP 返回方向的 `m.tun.WritePacket(pkt)` 时直接忽略返回值；即使打开 Debug，这里的写入错误也不会被这段代码记录。
+
+这些是当前明确的诊断缺口，尚不能据此认定具体错误已经在真机发生。下一步开发优先补充可关联连接的双向字节计数、首次收发时间和退出错误，以及限频的 TUN 写入失败/读取循环退出日志。
+
+### 8.3 603 的含义与限制
+
+本次现场记录将之前的“RX errors 603”更正为“TX dropped 603、RX errors 0”。按 [Linux v6.6 TUN 驱动的 tun_net_xmit](https://github.com/torvalds/linux/blob/v6.6/drivers/net/tun.c#L1010)，发送队列满、接口未附着和过滤等路径都可能增加 TX drop；它不是用户态 gVisor 主动丢弃包的专用计数，更不是某个 read/readv errno。
+
+这个数来自 00:55，被记录为工作正常的时段；01:19、01:32、01:41 尚无各次请求前后的完整计数。仅凭累计值无法建立它与断网的因果关系；涉及具体丢包机制还须确认设备内核实现。01:35 重启后的新接口计数也不能直接与旧接口累计值相减。
+
+### 8.4 下一轮只需补齐能区分路径的证据
+
+新增记录解决了“设置使用 Mixed”和“603 属于哪一列”的问题，但仍没有同一故障时刻、同一目标的 TUN/7890 对照结果，或 DIRECT 故障连接的具体日志。现在的明确失败样本主要是 GLOBAL/SSR，尚不能把它直接作为 DIRECT 全灭的实现证据。
+
+先固定 DIRECT 和一个无需 DNS、已确认可访问的 IPv4 HTTP 目标，同时从真机浏览器经 TUN、以及经 hdc 转发该真机的 7890 端口发起请求。两种入口测试时均保持同一真机 VPN 开启、同一网络、同一目标。随后只切换 Mixed/gVisor 重复测试。记录请求时间、有效配置、安装包/内核版本和新建连接，避免复用缓存或旧连接。
+
+现有 `getConnections()`（`proxy_core/src/flclash/hub.go:463`）已提供连接快照，可先采集目标连接的 `id`、`metadata.type`、源端口、目标、`chains`、`upload`、`download` 的连续样本，不必只看全局总速率：
+
+| 拨号成功后，同一连接的变化 | 优先核对 |
+|---|---|
+| upload/download 都不增长 | 浏览器是否发出 payload、peek/relay 是否开始或提前退出、对应 TUN 数据是否仍被读取 |
+| upload 增长、download 不增长 | 出站后续读写错误、节点协议/目标响应或物理网络；结合 7890 同目标结果区分 |
+| download 增长、浏览器仍无响应 | 返回浏览器方向的写入、TUN 回包和系统 TCP 接收；这只能作为方向线索，仍需读写错误或抓包确认 |
+| 连接很快从快照消失 | 捕获 relay 的 EOF/错误和关闭原因，避免误判成一直挂起 |
+
+这些是应用层统计，不能代替链路抓包；SSR/early handshake 可能已有初始上传量，应看同一连接的增量，而不是只看数值非零。`metadata.type` 也能核对该条到底是 TUN 还是 HTTP/SOCKS 入站。
+
+此前复核确认的 IPv6 参数遗漏、MTU 兜底范围不一致和看门狗只检查启动时间的问题仍应修复，但本次新增日志没有证明它们就是这些 IPv4/GLOBAL 请求失败的根因。
+
+## 9. 待测清单与结果回填
+
+以下项目均为**待执行**，不是已通过结果。先执行 T00–T04，按结果决定后续分支；T05–T09 用于基础通路恢复后的回归。每项完成后填写 §9.4，并将状态改为“通过 / 失败 / 无法执行”，附原始证据位置。
+
+### 9.1 每轮固定条件与必采证据
+
+- [ ] **E01 版本绑定**：记录手机型号、系统版本/API、网络类型、父仓及两个子模块提交、构建模式、所安装 HAP 的 SHA-256、包内 `libflclash.so` 的 SHA-256 和 provenance 检查结果。不能只记录本机源码版本。
+- [ ] **E02 有效配置**：记录实际生效的 mode、stack、MTU、IPv4/IPv6 地址与路由、DNS、应用访问控制，以及 GLOBAL 实际选择的节点。stack 以运行日志/有效配置为准；无法读取时明确写“仅根据设置推断”。
+- [ ] **E03 请求关联**：每轮生成唯一测试编号，记录带时区的开始/结束时间、目标 IP/端口、完整测试路径、入口（浏览器 TUN 或 HTTP 混合端口）。浏览器使用新请求参数避免缓存，并确认没有自动跳到另一个 HTTPS 目标。
+- [ ] **E04 同窗口采样**：保存请求前、请求中（例如 +1、+5、+15 秒）、请求结束后的完整 `/proc/net/dev` 输出，以及可读取的 TUN 错误子项。记录接口重建时间，只计算同一接口实例内的差值；权限拒绝也写入结果。
+- [ ] **E05 单连接采样**：连续采集 `getConnections()` 中目标连接的 `id`、`metadata.type`、源端口、目标、`chains`、`upload`、`download`；短连接未被采样到时标记“未捕获”，不能填写零流量。
+- [ ] **E06 日志与响应**：保留覆盖整个请求窗口的 Debug 日志，包含 dial、protect、TUN 读写错误。记录 HTTP 状态、响应内容是否符合预期、耗时或明确错误；仅出现 VPN 图标、IP 卡更新或 `using GLOBAL` 不算通过。
+
+T00–T04 固定同一手机、安装包、物理网络、MTU 和 IPv6 设置，关闭其他 VPN/同包实例。准备一个**无需 DNS、已确认可访问的 IPv4 HTTP 服务**，返回可辨认的小响应；若使用局域网服务，先确认目标被系统 VPN 路由接管，不能使用排除路由或应用绕过来代替 TUN 测试。
+
+### 9.2 按顺序执行的真机项目
+
+| 编号 | 状态 | 操作与唯一变化 | 必须记录 / 判定依据 |
+|---|---|---|---|
+| T00 | 待测 | VPN 关闭，手机浏览器访问测试 HTTP 服务 | 应获得预期响应，建立物理网络基线；失败先处理目标服务/网络，不解释为 TUN 问题 |
+| T01 | 待测 | 开启 VPN，DIRECT + Mixed，浏览器访问同一目标 | 采集 E01–E06，确认连接类型为 TUN；记录从建连到首个响应的结果，作为当前问题的最小复现 |
+| T02 | 待测 | 保持 T01 的 VPN 和配置不变，经 hdc 转发 7890 后请求同一目标 | 与 T01 配对执行。记录 HTTP 入站及 DIRECT 出站；若仅 TUN 失败，优先查 TUN/本地 TCP 转发；若两者都失败，查共同出站路径 |
+| T03 | 待测 | 仅将 stack 改为 gVisor，完整停止/启动 VPN，再重复 T01、T02 | 保存新接口基线与实际 stack。Mixed 失败而 gVisor 成功时优先定位 System TCP 路径；两者失败不能自动归因为同一组件 |
+| T04 | 待测 | 在失败的一组配置下重复单个请求，连续记录上下行及退出事件 | 按 §8.4 区分未产生 payload、只上传、已有下载但客户端无响应、提前关闭。若现有日志无法区分，记录“缺少 D01/D02 证据”，不将沉默解释为卡死 |
+| T05 | 待测 | 基础 IPv4 DIRECT 通路成功后，先保持同一目标改用其域名，再独立测试 HTTPS | 将 DNS 和 TLS 分成两步；记录解析结果、fake-IP 映射、TLS/HTTP 结果。HTTPS 使用正确域名和证书，避免裸 IP 证书错误干扰 |
+| T06 | 待测 | 单独切换 IPv6 开关，每次重启 VPN，分别验证 IPv4 和可用的 IPv6 目标 | 对照系统地址/路由与原生前缀，重点复现关闭 IPv6 仍接管 IPv6 的问题；无 IPv6 基线时标记环境不支持。修复后须验证两端一致及 IPv4 无回退 |
+| T07 | 待测 | 保持已通过配置，对同一 HTTP 服务分别请求小响应和较大响应，再单独调整 MTU | 建议小响应约 1 KiB、大响应约 1 MiB，核对完整内容/长度及计数增量。默认 1400 两端必须一致；MTU=1000 的兜底差异先用配置测试验证，不依赖 UI 强行输入非法值 |
+| T08 | 待测 | DIRECT 基础测试通过后，仅切为 GLOBAL，选择已用实际代理请求验证可用的节点 | 重复浏览器 TUN / 7890 成对请求并记录真实 `chains`；以网站响应确认节点可用，不用 ICMP 或端口能连接代替 SSR 可用性；单独记录 connect 超时和拨号后的错误 |
+| T09 | 待测 | 基础通路通过后，分别做停止再启动、快速启停、后台/锁屏、网络切换 | 各场景分轮执行：建议停止/启动 3 轮、快速启停 5 轮、锁屏 5 分钟，Wi-Fi/蜂窝切换以设备条件为准；每轮操作后发起新请求，核对 TUN/状态/转发一致且停止后恢复普通网络 |
+
+T02 的 Mac 侧示例（替换设备标识和服务地址；代理端口以实际配置为准）：
+
+```bash
+HDC=/Applications/DevEco-Studio.app/Contents/sdk/default/openharmony/toolchains/hdc
+VPN_TEST_DEVICE='<设备标识>'
+VPN_TEST_URL='http://<已验证的IPv4地址>:<端口>/<测试路径>?case=T02-01'
+"$HDC" -t "$VPN_TEST_DEVICE" fport tcp:17890 tcp:7890
+curl --noproxy '' --proxy http://127.0.0.1:17890 \
+  --connect-timeout 10 --max-time 30 --verbose \
+  --dump-header T02-01.headers --output T02-01.body \
+  --write-out 'status=%{http_code} bytes=%{size_download} total=%{time_total}\n' \
+  "$VPN_TEST_URL" 2>T02-01.curl.log
+```
+
+TUN 采样示例，每个采样时点分别保存输出（文件名包含测试编号和采样时间）：
+
+```bash
+"$HDC" -t "$VPN_TEST_DEVICE" shell cat /proc/net/dev
+"$HDC" -t "$VPN_TEST_DEVICE" shell 'for item in rx_bytes rx_packets rx_errors rx_frame_errors rx_length_errors rx_dropped tx_bytes tx_packets tx_errors tx_dropped; do printf "%s=" "$item"; cat "/sys/class/net/vpn-tun/statistics/$item"; done'
+```
+
+### 9.3 需要新增诊断代码或修复后执行的项目
+
+下列能力**当前尚未实现**；不能要求现有安装包输出这些日志，也不能仅调高日志等级就认为已覆盖。
+
+- [ ] **D01 双向转发诊断**：关联测试连接，记录 relay 开始、两个方向的字节数/首次收发时间、EOF/错误/关闭原因；用受控断开、读写失败验证事件能被捕获，且记录没有改变正常转发行为。闭合 T04 中“正常等待还是提前退出”的证据缺口。
+- [ ] **D02 TUN 收发诊断**：补限频的读写 errno、包长、收发计数和读取循环退出事件；覆盖 Mixed 的 TCP `Write`、UDP `WritePacket` 返回错误以及纯 gVisor 路径，确认无逐包日志洪泛。故障注入后核对事件与计数一致。
+- [ ] **D03 数据通路失效与自愈**：受控触发读取循环退出、保持 IPC 可访问，检查运行状态是否仍误报正常；修复后验证能识别失效并按既定策略恢复/报告失败。空闲无流量不应误触发恢复，用户停止后不得被迟到回调重启。
+- [ ] **D04 配置一致性回归**：修复 IPv6 参数遗漏与路由过滤后，验证关闭 IPv6 时系统和原生均不配置 IPv6 接管；统一 MTU 归一化规则，并以默认、最小合法、最大合法及越界输入核对两端结果，然后重跑 T01–T03、T06、T07。
+
+### 9.4 每项结果回填模板
+
+复制此模板为每个测试编号建立记录；“未采集”和“无错误”必须区分。
+
+```text
+测试编号 / 状态（通过、失败、无法执行）：
+执行者 / 时间与时区：
+设备 / 系统 / 网络：
+父仓 / core / gvisor 提交，HAP 与 libflclash.so 摘要：
+有效 mode / stack / MTU / IPv6 / 节点 chains：
+目标 / 入口 / 请求开始与结束时间：
+HTTP 状态、响应内容/长度、耗时或具体错误：
+连接 id / metadata.type / 源端口：
+连接 upload、download 连续样本：
+同一 TUN 实例的计数前值、后值、差值：
+dial / protect / relay / TUN 错误与事件（未采集项注明）：
+配对测试编号及结果（例如 T01 与 T02）：
+原始日志、响应、配置、快照的文件路径：
+本次证据支持的结论 / 仍不能排除的情况：
+```
+
+只有基础 DIRECT 的 TUN/7890 对照、协议栈对照及相应错误证据齐备后，才将候选机制提升为根因；真实网页恢复与修复后的回归结果另行记录，不以构建成功或 mock 测试通过替代。
