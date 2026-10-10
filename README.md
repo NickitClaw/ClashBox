@@ -23,6 +23,10 @@ git submodule update --init --recursive
 `xfz347/Clash.Meta` 的 `2ee8e1034c2a9407396eba04ba1a09619d1e2175`，gVisor 固定为核心要求的
 `79317d808312e241b8da115b7e07a912c2e4631f`。这会替换原先未附匹配源码的预编译内核，升级后的协议与联网行为应在目标设备回归。
 
+应用所需的核心补丁维护在 `proxy_core/src/flclash/corepatches/`：构建和原生测试使用 Go overlay
+恢复 HTTP 规则集下载，并为保存前语义校验隔离运行参数、释放临时资源。子模块保持固定版本且无本地改动；
+补丁纳入原生源码摘要，升级子模块时若匹配失败会中止构建。请使用下述构建脚本，不要绕过 overlay 直接执行 `go build`。
+
 原生编译使用 [OpenHarmony-SIG Go](https://gitcode.com/openharmony-sig/ohos_golang_go)，已验证工具链提交
 `302a5306b6fad2f47196360b82561d1db1f954cf`（`release-branch.go1.24`，Go 1.24.5），并用官方 Go 1.24.0 引导编译：
 
@@ -50,6 +54,7 @@ devecocli build --modules entry --build-mode debug
 | `profile/ProfileDownloader.ets` | 原生/系统 HTTP 下载、响应元数据与下载临时文件清理 |
 | `profile/ProfileTransformer.ets` | 节点链接转换、YAML 覆写、脚本与规则处理；通过 TaskPool 执行 |
 | `profile/ProfileStorage.ets` | 按配置的跨进程锁、完整读写、内核校验、原子替换与脚本备份 |
+| `profile/ProfileBackup.ets` | JSON 备份元数据、稳定配置 ID 和节点选择的恢复 |
 
 新增配置修改功能应调用 `Profile`，不要在页面或后台任务直接覆盖 `config.yaml`：
 
@@ -114,6 +119,11 @@ GitHub Actions 按提交 SHA 固定。轻量 CI 检查生成文件、原生源�
 它将实际 ArkTS 默认值及迁移结果交给 mihomo 配置解析器，再用真实 TLS ClientHello 检查错误 IP 纠正、
 显式关闭、跳过域名/地址、端口限制和无 SNI 回退，并确认嗅探没有消费或改写请求字节；不需要访问外网。
 此项不属于无需子模块的轻量 CI，也不能替代真机 TUN 验证。
+
+`npm run test:core` 使用相同 overlay 和真实核心，覆盖规则集首次下载、缓存及更新、Provider 导入、
+配置语义校验和 Sniffer 开关，并在解析过程尚未结束时检查运行模式未被改动。测试 HTTP 服务仅监听本机。
+请求历史的并发读写/清空测试已纳入 `npm run check` 的竞态检查。
+全量开发机检查顺序为 `npm run check`、`npm run test:core`、`npm run test:sniffer`，随后进行 HAP 构建。
 
 在已安装 API 26、OpenHarmony Go 和 `devecocli` 的开发机上，初始化子模块并执行 `ohpm install --all` 后：
 

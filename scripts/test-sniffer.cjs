@@ -7,6 +7,7 @@ const vm = require('node:vm');
 const { spawnSync } = require('node:child_process');
 const ts = require('typescript');
 const root = path.resolve(__dirname, '..');
+const { createCoreOverlay } = require('../proxy_core/src/flclash/corepatches/overlay.cjs');
 function load(file, imports) {
   const module = { exports: {} };
   const code = ts.transpileModule(fs.readFileSync(path.join(root, file), 'utf8'), {
@@ -25,7 +26,7 @@ try {
   const fixtures = path.join(temp, 'settings.json');
   fs.writeFileSync(fixtures, JSON.stringify({ legacy, fresh: new model.ClashConfig().sniffer,
     migrated: migrateSnifferConfig({ sniffer: structuredClone(legacy) }).sniffer }));
-  const result = spawnSync(process.env.GO_BIN || 'go', ['test', '-mod=readonly', '-race', '-v',
+  const result = spawnSync(process.env.GO_BIN || 'go', ['test', '-mod=readonly', '-race', '-overlay', createCoreOverlay(temp), '-v',
     path.join(root, 'tests/sniffer_destination_test.go')], {
     cwd: path.join(root, 'proxy_core/src/flclash'), stdio: 'inherit',
     env: { ...process.env, GO111MODULE: 'on', CLASHBOX_SNIFFER_FIXTURES: fixtures }

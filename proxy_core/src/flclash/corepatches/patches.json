@@ -1,0 +1,41 @@
+[
+  {
+    "file": "rules/provider/provider.go",
+    "before": "\t// ★ 远程规则集改由前端管理: HTTP vehicle 包装为仅本地(网络读取一律拒绝) + interval 归零(禁轮询,\n\t// 避免每轮 Read 失败触发 backoff 重试刷日志)。本地缓存缺失时 Initial 报错仅 Warnln(executor 容错), 规则集置空。\n\tif vehicle.Type() == P.HTTP {\n\t\tvehicle = &localOnlyVehicle{inner: vehicle}\n\t\tinterval = 0\n\t}",
+    "after": "\t// ClashBox uses Mihomo for initial downloads, manual refresh and periodic updates."
+  },
+  {
+    "file": "config/config.go",
+    "before": "func ParseRawConfig(rawCfg *RawConfig) (*Config, error) {\n\tconfig := &Config{}",
+    "after": "func ParseRawConfig(rawCfg *RawConfig) (*Config, error) {\n return parseRawConfig(rawCfg, false)\n}\n\nfunc parseRawConfig(rawCfg *RawConfig, validating bool) (result *Config, err error) {\n config := &Config{}\n defer func() { if result == nil { CloseParsedConfig(config) } }()"
+  },
+  {
+    "file": "config/config.go",
+    "before": "\trollback := temporaryUpdateGeneral(config.General)\n\tdefer rollback()",
+    "after": "\tif !validating {\n\t\trollback := temporaryUpdateGeneral(config.General)\n\t\tdefer rollback()\n\t}"
+  },
+  {
+    "file": "config/config.go",
+    "before": "ruleProviders, err := parseRuleProviders(rawCfg)",
+    "after": "ruleProviders, err := parseRuleProviders(rawCfg, !validating)"
+  },
+  {
+    "file": "config/config.go",
+    "before": "\tproxies = make(map[string]C.Proxy)\n\tprovidersMap = make(map[string]P.ProxyProvider)",
+    "after": "\tproxies = make(map[string]C.Proxy)\n\tprovidersMap = make(map[string]P.ProxyProvider)\n allocatedProxies, allocatedProviders := proxies, providersMap\n defer func() { if err != nil { CloseParsedConfig(&Config{Proxies: allocatedProxies, Providers: allocatedProviders}) } }()"
+  },
+  {
+    "file": "config/config.go",
+    "before": "\tlisteners = make(map[string]C.InboundListener)\n\tfor index, mapping := range cfg.Listeners {",
+    "after": "\tlisteners = make(map[string]C.InboundListener)\n allocated := listeners\n defer func() { if err != nil { CloseParsedConfig(&Config{Listeners: allocated}) } }()\n\tfor index, mapping := range cfg.Listeners {"
+  },
+  {
+    "file": "config/config.go",
+    "before": "func parseRuleProviders(cfg *RawConfig) (ruleProviders map[string]P.RuleProvider, err error) {\n\tRP.SetTunnel(T.Tunnel)\n\truleProviders = map[string]P.RuleProvider{}",
+    "after": "func parseRuleProviders(cfg *RawConfig, installTunnel bool) (ruleProviders map[string]P.RuleProvider, err error) {\n if installTunnel { RP.SetTunnel(T.Tunnel) }\n ruleProviders = map[string]P.RuleProvider{}\n allocated := ruleProviders\n defer func() { if err != nil { CloseParsedConfig(&Config{RuleProviders: allocated}) } }()"
+  },
+  {
+    "file": "config/clashbox_validation.go",
+    "source": "validation.go.txt"
+  }
+]

@@ -21,8 +21,9 @@ export CGO_LDFLAGS="$CGO_CFLAGS -Wl,-z,lazy"
 export GOOS=openharmony GOARCH="$ARCH" CGO_ENABLED=1 GOTOOLCHAIN=local
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
+node corepatches/overlay.cjs "$work"
 revision="$(git -C core rev-parse --short=12 HEAD)"
-"$GO_BIN" build -trimpath -buildmode=c-shared -tags 'ohos with_gvisor' \
+"$GO_BIN" build -overlay="$work/core-overlay.json" -trimpath -buildmode=c-shared -tags 'ohos with_gvisor' \
   -ldflags "-s -w -checklinkname=0 -X github.com/metacubex/mihomo/constant.Version=ClashBox-$revision" \
   -o "$work/libflclash.so" .
 mkdir -p "../../libs/$outdir"

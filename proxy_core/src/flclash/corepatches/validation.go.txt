@@ -1,0 +1,31 @@
+// This file is compiled into mihomo/config through the Go overlay, never as a wrapper package.
+package config
+
+// ParseRawConfigForValidation reuses semantic parsing without temporarily changing
+// the running tunnel mode, outbound interface, DNS IPv6 or global dialer settings.
+// Geo rules use the application's installed geodata settings. Providers are not initialized.
+func ParseRawConfigForValidation(raw *RawConfig) (*Config, error) {
+	raw.Profile.StoreFakeIP = false
+	return parseRawConfig(raw, true)
+}
+
+// CloseParsedConfig discards temporary or partially parsed configurations.
+// Running configurations must only be retired by the executor.
+func CloseParsedConfig(parsed *Config) {
+	for _, p := range parsed.Providers {
+		if closer, ok := p.(interface{ Close() error }); ok {
+			_ = closer.Close()
+		}
+	}
+	for _, p := range parsed.RuleProviders {
+		if closer, ok := p.(interface{ Close() error }); ok {
+			_ = closer.Close()
+		}
+	}
+	for _, p := range parsed.Proxies {
+		_ = p.Close()
+	}
+	for _, listener := range parsed.Listeners {
+		_ = listener.Close()
+	}
+}

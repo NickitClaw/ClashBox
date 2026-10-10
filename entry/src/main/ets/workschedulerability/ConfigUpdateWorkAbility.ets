@@ -19,7 +19,7 @@ const DEFAULT_UA = 'clash.meta/1.19.5'
 /**
  * 内核校验回退代理：优先走 clash_go.sock RPC（VPN 扩展进程在线时与 UI 路径一致）；
  * 扩展进程被系统回收导致 RPC 不可达时，在本进程加载内核仅做配置校验
- *（initClash 幂等，仅设置 home 目录；validateConfig 为纯解析，不写盘）。
+ *（initClash 幂等，仅设置 home 目录；validateConfig 做语义校验，不应用运行配置）。
  */
 class LocalValidateSocketProxy extends SocketProxyService {
   private localCoreInited = false
@@ -78,8 +78,11 @@ export default class ConfigUpdateWorkAbility extends WorkSchedulerExtensionAbili
     const now = Date.now()
     const socketProxy = new LocalValidateSocketProxy()
     socketProxy.init(this.context)
-    for (const profile of targets) {
+    for (const target of targets) {
       if (generation !== this.generation) return
+      // The user may disable/delete a later subscription while an earlier download is pending.
+      const profile = await repo.query(target.id)
+      if (!profile || findAutoUpdateTargets([profile]).length === 0) continue
       if (!isProfileUpdateDue(profile, now)) {
         hilog.info(0xFF00, TAG, `配置 [${profile.name}] 未到更新间隔，跳过`)
         continue

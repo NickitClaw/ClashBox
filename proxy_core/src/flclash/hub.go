@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"core/configops"
+	"core/requesthistory"
 	"encoding/json"
 	"fmt"
 	"github.com/samber/lo"
@@ -87,7 +89,9 @@ func handleShutdown() bool {
 }
 
 func handleValidateConfig(bytes []byte) string {
-	_, err := config.UnmarshalRawConfig(bytes)
+	runLock.Lock()
+	defer runLock.Unlock()
+	err := configops.Validate(bytes)
 	if err != nil {
 		return err.Error()
 	}
@@ -118,7 +122,8 @@ func handleUpdateConfig(bytes []byte) string {
 	// Translate the legacy wrapper option into Mihomo's system DNS source.
 	var legacy struct {
 		Config struct {
-			App *struct {
+			Sniffer *config.RawSniffer `json:"sniffer"`
+			App     *struct {
 				AppendSystemDNS *bool `json:"appendSystemDns"`
 			} `json:"app"`
 		} `json:"config"`
@@ -126,6 +131,7 @@ func handleUpdateConfig(bytes []byte) string {
 	if err := json.Unmarshal(bytes, &legacy); err != nil {
 		return err.Error()
 	}
+	configops.OverrideSniffer(prof, legacy.Config.Sniffer)
 	if legacy.Config.App != nil && legacy.Config.App.AppendSystemDNS != nil && *legacy.Config.App.AppendSystemDNS {
 		if !lo.Contains(prof.DNS.NameServer, "system") {
 			prof.DNS.NameServer = append(prof.DNS.NameServer, "system")
@@ -693,9 +699,9 @@ func handleGetMemory(fn func(value string)) {
 	}()
 }
 
-var reqeustList = []statistic.Tracker{}
-
 const maxRequestList = 1000
+
+var requestList = requesthistory.New[statistic.Tracker](maxRequestList)
 
 func init() {
 	adapter.UrlTestHook = func(url string, name string, delay uint16) {
@@ -713,12 +719,7 @@ func init() {
 		})
 	}
 	statistic.DefaultRequestNotify = func(c statistic.Tracker) {
-		reqeustList = append(reqeustList, c)
-		if len(reqeustList) > maxRequestList {
-			// 超过上限，丢弃最旧的 1/4 记录，防止无限增长
-			drop := len(reqeustList) / 4
-			reqeustList = reqeustList[drop:]
-		}
+		requestList.Append(c)
 		sendMessage(Message{
 			Type: RequestMessage,
 			Data: c,

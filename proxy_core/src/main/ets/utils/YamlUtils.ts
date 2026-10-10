@@ -4,7 +4,7 @@ import { util } from '@kit.ArkTS';
 
 export class YamlUtils {
   /**
-   * ★ 安全解析 YAML：修复被 yaml 库解析为 Infinity/NaN 的数值标量。
+   * Preserve scalar source text when JavaScript numbers cannot represent it exactly.
    * 订阅中无引号的 16 进制/科学计数法形态字符串(如 password: 48654786e0504509)会被
    * 解析为数字并按指数溢出为 Infinity, 再 stringify 时输出 ".inf", 导致密码损坏。
    * 此处用 parseDocument 保留的原始 source 还原为字符串, 保证 parse→stringify 往返不丢数据。
@@ -14,7 +14,7 @@ export class YamlUtils {
     if (doc.errors.length > 0) {
       throw new Error(`无效 YAML：${doc.errors[0].code}`);
     }
-    YamlUtils.fixInfiniteScalars(doc.contents);
+    YamlUtils.preserveScalarText(doc.contents);
     // Unresolved aliases and excessive alias expansion also fail here, once.
     return doc.toJS() as Record<string, Object | undefined>;
   }
@@ -98,12 +98,13 @@ export class YamlUtils {
     return proxy;
   }
 
-  /** 递归修复节点树中值为 Infinity/NaN 的标量，还原为其原始字符串 source */
-  private static fixInfiniteScalars(node: Object | null | undefined): void {
+  /** Credentials are text; unsafe integer and non-finite aliases also retain their source. */
+  private static preserveScalarText(node: Object | null | undefined): void {
     if (!node) return;
     if (isScalar(node)) {
       const sc = node as Scalar<unknown>;
-      if (typeof sc.value === 'number' && !Number.isFinite(sc.value as number) && sc.source != null) {
+      if (typeof sc.value === 'number' && sc.source != null &&
+        (!Number.isFinite(sc.value) || (Number.isInteger(sc.value) && !Number.isSafeInteger(sc.value)))) {
         sc.value = sc.source;
       }
       return;
@@ -111,15 +112,20 @@ export class YamlUtils {
     if (isSeq(node)) {
       const seq = node as YAMLSeq;
       for (const item of seq.items) {
-        YamlUtils.fixInfiniteScalars(item as Object);
+        YamlUtils.preserveScalarText(item as Object);
       }
       return;
     }
     if (isMap(node)) {
       const map = node as YAMLMap;
       for (const pair of map.items) {
-        YamlUtils.fixInfiniteScalars(pair.key as Object);
-        YamlUtils.fixInfiniteScalars(pair.value as Object);
+        if (isScalar(pair.key) && typeof pair.key.value === 'string' &&
+          ['password', 'username', 'uuid', 'token', 'auth', 'auth-str', 'private-key', 'public-key', 'short-id'].includes(pair.key.value) &&
+          isScalar(pair.value) && typeof pair.value.value !== 'string' && pair.value.source != null) {
+          pair.value.value = pair.value.source;
+        }
+        YamlUtils.preserveScalarText(pair.key as Object);
+        YamlUtils.preserveScalarText(pair.value as Object);
       }
     }
   }

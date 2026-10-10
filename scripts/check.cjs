@@ -6,7 +6,7 @@ const checks = [
   [process.execPath, ['scripts/generate-rpc.cjs', '--check']],
   [process.execPath, ['scripts/native-provenance.cjs', '--check', 'arm64-v8a']],
   [process.execPath, ['--test', 'tests/regression.cjs']],
-  [process.env.GO_BIN || 'go', ['test', '-race', './proxy_core/src/flclash/rpcframe', './proxy_core/src/flclash/rpccontract']]
+  [process.env.GO_BIN || 'go', ['test', '-race', './proxy_core/src/flclash/rpcframe', './proxy_core/src/flclash/rpccontract', './proxy_core/src/flclash/requesthistory']]
 ];
 for (const [command, args] of checks) {
   const result = spawnSync(command, args, { stdio: 'inherit', env: { ...process.env, GO111MODULE: 'off' } });

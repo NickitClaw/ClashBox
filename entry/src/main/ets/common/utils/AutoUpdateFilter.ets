@@ -8,10 +8,10 @@ import { Profile, ProfileType } from 'proxy_core'
 /** 更新间隔判断的误差容忍（5 秒），沿用原 ConfigAutoUpdateService 逻辑 */
 const UPDATE_TOLERANCE_MS: number = 5 * 1000
 
-/** 勾选自动更新的 URL 类型订阅 */
+/** Disabled profiles must be excluded from both foreground and background refresh. */
 export function findAutoUpdateTargets(profiles: Profile[]): Profile[] {
   return profiles.filter((profile: Profile) => {
-    return profile.autoUpdate && profile.type === ProfileType.Url
+    return profile.autoUpdate && !profile.isUpdating && profile.type === ProfileType.Url
   })
 }
 

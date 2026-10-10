@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"core/configops"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -155,24 +156,7 @@ func toExternalProvider(p cp.Provider) (*ExternalProvider, error) {
 }
 
 func sideUpdateExternalProvider(p cp.Provider, bytes []byte) error {
-	switch p.(type) {
-	case *provider.ProxySetProvider:
-		psp := p.(*provider.ProxySetProvider)
-		_, _, err := psp.SideUpdate(bytes)
-		if err == nil {
-			return err
-		}
-		return nil
-	case rp.RuleSetProvider:
-		rsp := p.(*rp.RuleSetProvider)
-		_, _, err := rsp.SideUpdate(bytes)
-		if err == nil {
-			return err
-		}
-		return nil
-	default:
-		return errors.New("not external provider")
-	}
+	return configops.SideUpdate(p, bytes)
 }
 
 func decorationConfig(profileId string, source *string, cfg config.RawConfig) (*config.RawConfig, error) {
@@ -254,9 +238,6 @@ func overwriteConfig(targetConfig *config.RawConfig, patchConfig config.RawConfi
 	targetConfig.Profile.StoreSelected = false
 	targetConfig.GeoXUrl = patchConfig.GeoXUrl
 	targetConfig.GlobalUA = patchConfig.GlobalUA
-	if patchConfig.Sniffer.Enable {
-		targetConfig.Sniffer = patchConfig.Sniffer
-	}
 	// ★ Tunnel 流量转发: 从 UI 配置透传到内核(与 mihomo tunnels 段字段一致)
 	targetConfig.Tunnels = patchConfig.Tunnels
 

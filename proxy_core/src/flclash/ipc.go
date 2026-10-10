@@ -19,7 +19,6 @@ import (
 	"time"
 
 	"github.com/metacubex/mihomo/constant"
-	"github.com/metacubex/mihomo/tunnel/statistic"
 
 	"github.com/metacubex/http"
 )
@@ -174,7 +173,7 @@ func handleRemoteRequest(request RpcRequest, fn func(RpcResult)) {
 		ret.Result = HandleRequestList()
 		fn(ret)
 	case ClearRequestList:
-		reqeustList = []statistic.Tracker{}
+		requestList.Clear()
 		fn(ret)
 	case CloseConnection:
 		str, _ := request.Params[0].(string)
@@ -478,7 +477,7 @@ func limitErrorBody(data []byte) string {
 }
 
 func HandleRequestList() string {
-	json, _ := json.Marshal(reqeustList)
+	json, _ := json.Marshal(requestList.Snapshot())
 	return string(json)
 }
 

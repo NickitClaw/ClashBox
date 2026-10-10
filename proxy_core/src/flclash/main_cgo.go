@@ -18,7 +18,6 @@ import (
 	"github.com/likuai2010/ohos-napi/js"
 	"github.com/metacubex/mihomo/dns"
 	"github.com/metacubex/mihomo/log"
-	"github.com/metacubex/mihomo/tunnel/statistic"
 )
 
 func initClash(env js.Env, this js.Value, args []js.Value) any {
@@ -297,12 +296,12 @@ func registerMessage(env js.Env, this js.Value, args []js.Value) any {
 	return nil
 }
 func getRequestList(env js.Env, this js.Value, args []js.Value) any {
-	json, _ := json.Marshal(reqeustList)
+	json, _ := json.Marshal(requestList.Snapshot())
 	return env.ValueOf(string(json))
 }
 
 func clearRequestList(env js.Env, this js.Value, args []js.Value) any {
-	reqeustList = []statistic.Tracker{}
+	requestList.Clear()
 	return env.ValueOf("")
 }
 func startListener(env js.Env, this js.Value, args []js.Value) any {

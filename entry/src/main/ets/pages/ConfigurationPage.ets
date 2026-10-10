@@ -999,18 +999,18 @@ struct ConfigurationPage {
 
   /**删除配置*/
   private async deleteConfig(): Promise<void> {
+    try {
     hilog.info(0xC016, componentName, `#deleteConfig#删除配置: configName is [${this.currentTouchConfigData.configName}]`)
     await ClashViewModel.deleteProfile(this.currentTouchConfigData.configId)
-    this.appConfig.currentProxyName = undefined
-    this.appConfig.currentProfileName = undefined
     this.favoriteProfiles.delete(this.currentTouchConfigData.configId)
-    // 节点名已清空，同步共享 preferences（VPN 扩展进程常驻通知标题回退为 ClashBox）
-    syncVpnNoticePrefs(this.getUIContext().getHostContext()!)
     // 订阅集合已变化，重新评估自动更新延迟任务（无勾选时停止 WorkScheduler 任务）
     ConfigAutoUpdateService.reset()
     // 加载配置
     EventHub.sendEvent(EventKey.FetchProfile)
     Xb_ToastUtil.showToast({ message: `${getResourceString($r('app.string.configuration_deleted'), this)}💔` })
+    } catch (error) {
+      Xb_ToastUtil.showToast({ message: `删除配置失败：${(error as Error).message}` });
+    }
   }
 
   /**

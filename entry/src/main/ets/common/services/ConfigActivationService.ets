@@ -37,6 +37,36 @@ export class ConfigActivationService {
     });
   }
 
+  /** Node changes share the activation queue; rollback always keeps the last acknowledged selection. */
+  selectProxy(id: string, group: string, name: string, apply: () => Promise<void>,
+    persist?: () => Promise<void>): Promise<boolean> {
+    return this.enqueue(async () => {
+      if (this.host.selectedId() !== id) return false;
+      await apply();
+      if (this.confirmed?.id === id) {
+        const selected = this.confirmed.payload.params['selected-map'] ?? {};
+        selected[group] = name;
+        this.confirmed.payload.params['selected-map'] = selected;
+      }
+      await persist?.();
+      return true;
+    });
+  }
+
+  /** Deletion cannot race an activation or leave a rollback snapshot referencing deleted files. */
+  remove(id: string, erase: () => Promise<void>, clearSelection: () => void): Promise<boolean> {
+    return this.enqueue(async () => {
+      const selected = this.host.selectedId() === id;
+      if (selected) await this.host.stop();
+      await erase();
+      if (selected) {
+        this.confirmed = undefined;
+        clearSelection();
+      }
+      return selected;
+    });
+  }
+
   private enqueue(work: () => Promise<boolean>): Promise<boolean> {
     const pending = this.queue.then(work);
     this.queue = pending.then(() => {}, () => {});

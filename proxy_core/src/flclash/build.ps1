@@ -26,9 +26,21 @@ $env:CGO_LDFLAGS = "-extld=$env:LD --sysroot=$OHOS_NATIVE_HOME/sysroot --target=
 
 $sourceFile = "./"
 $outputFile = "libflclash.so"
+$overlayDir = Join-Path ([System.IO.Path]::GetTempPath()) ("clashbox-core-" + [guid]::NewGuid())
+New-Item -ItemType Directory -Path $overlayDir | Out-Null
+node "$PSScriptRoot/corepatches/overlay.cjs" $overlayDir
+if ($LASTEXITCODE -ne 0) {
+    Remove-Item -Recurse -Force $overlayDir
+    throw "Core overlay generation failed"
+}
 # 压缩so
 # -trimpath -ldflags="-s -w"
-G:\git\golang_go\bin\go build -tlsmodegd -buildmode c-shared -tags  "foss cmfa with_gvisor ohos"  -v -o $outputFile $sourceFile 
+try {
+    G:\git\golang_go\bin\go build "-overlay=$overlayDir/core-overlay.json" -tlsmodegd -buildmode c-shared -tags "foss cmfa with_gvisor ohos" -v -o $outputFile $sourceFile
+    if ($LASTEXITCODE -ne 0) { throw "Native build failed; refusing to copy a stale library" }
+} finally {
+    Remove-Item -Recurse -Force $overlayDir
+}
 
 # 检查编译结果
 if (Test-Path $outputFile) {

@@ -923,6 +923,7 @@ function viewModelFixture(options = {}) {
     'proxy_core/src/main/ets/rpc/RpcContract.generated': rpcGenerated,
     'proxy_core/src/main/ets/rpc/VpnLifecycleState': lifecycleModule,
     'proxy_core/src/main/ets/ProfileRepo': { ProfileRepo: class {} },
+    'proxy_core/src/main/ets/profile/ProfileBackup': options.profileBackup ?? {},
     'proxy_core/src/main/ets/profile/ProfileStorage': { ProfileStorage: class {
       async transaction(action) { return action({ read: async () => options.profileSource }); }
     } },
@@ -944,10 +945,12 @@ function viewModelFixture(options = {}) {
     '../common/EventHub': { EventHub: { sendEvent: (e, value) => { events.push(e); if (e === 'delay') delayEvents.push(value); } },
       EventKey: { StartedClash: 'started', StopedClash: 'stopped', TestDelay: 'delay', FetchProxyGroup: 'groups' } },
     '../common/utils/CardManageUtil': { cardManager: { getClashConfig: () => options.cardClashConfig,
+      getAppConfig: () => options.storage?.get('appConfig') ?? options.appConfig,
+      setAppConfig: app => { calls.push(['saveApp', app]); },
       pushCartProxyMode: state => calls.push(state ? 'runningCard' : 'stoppedCard'), pushCartVpnState: state => calls.push(state.running ? 'runningCard' : 'stoppedCard'), pushCartVpnServiceTime() {} } },
     '../common/utils/VpnNoticeConfigSync': { syncVpnNoticePrefs: async () => {} },
     '@kit.PerformanceAnalysisKit': { hilog: quiet }
-  }, { AppStorage: { setOrCreate() {}, get: k => options.storage ? options.storage.get(k) : options.appConfig ?? ({ clashCore: options.core ?? 0 }) },
+  }, { AppStorage: { setOrCreate(k, v) { if (options.storage) options.storage.set(k, v); }, get: k => options.storage ? options.storage.get(k) : options.appConfig ?? ({ clashCore: options.core ?? 0 }) },
     $r: (key, ...params) => ({ key, params }), ...(options.time || {}) });
   ClashViewModel.promptAction = { showToast: message => messages.push(message) };
   const service = new ClashViewModel(); service.loadConfig = async () => calls.push('loadConfig');
@@ -1410,7 +1413,7 @@ test('Backup restore applies the build core policy for both file and supplied ba
       'BuildProfile': { default: { DEBUG: debug } }, '../services/CoreMode': coreMode,
       'proxy_core': { ...clashConfigModel, ...snifferMigration },
       '../entity/utils': { getJsonArrayType: () => 'string' },
-      '../../entryability/ClashViewModel': { default: { addOrUpdateProfiles: async list => restored.push(list) } },
+      '../../entryability/ClashViewModel': { default: { addOrUpdateProfiles: async list => restored.push(list), getProfile: async id => ({ id }) } },
       'xb_components': {
         Xb_FileUtils: { openFile: async () => 'backup.json', importDataByFile: async () => config },
         Xb_PreferenceUtil: { put: async () => {} }, Xb_ToastUtil: { showToast() {}, restartApp() {} }
@@ -1683,4 +1686,217 @@ test('Skipping first-run prompts preserves crash/import sheets and upgrade data 
   const upgrade = startupFixture({ isFirstStart: false, oldVersionCode: 6 }); upgrade.page.completeStartup(7);
   assert.equal(upgrade.migrations(), 1); assert.equal(upgrade.page.showUpdateLog, true);
   assert.equal(upgrade.page.isShowWelcome, true); assert.equal(upgrade.page.uiConfig.oldVersionCode, 6);
+});
+
+test('Activation rollback retains the last acknowledged manual node selection', async () => {
+  const f = activationFixture(); let live = 'N1';
+  const prepare = f.host.prepare;
+  f.host.prepare = async (...args) => { const s = await prepare(...args); s.payload.params['selected-map'] = { PROXY: live }; return s; };
+  f.host.apply = async s => { if (s.id === 'B') throw new Error('invalid B'); live = s.payload.params['selected-map'].PROXY; };
+  await f.service.activate('A');
+  assert.equal(await f.service.selectProxy('A', 'PROXY', 'N2', async () => { live = 'N2'; }), true);
+  await assert.rejects(f.service.activate('B'), /invalid B/);
+  assert.equal(live, 'N2');
+  await assert.rejects(f.service.selectProxy('A', 'PROXY', 'N3', async () => { throw new Error('node rejected'); }), /node rejected/);
+  await assert.rejects(f.service.activate('B'), /invalid B/);
+  assert.equal(live, 'N2');
+});
+test('A queued node change cannot modify a different profile after a successful switch', async () => {
+  const f = activationFixture(); await f.service.activate('A');
+  const gate = deferred(), entered = deferred(), apply = f.host.apply;
+  f.host.apply = async s => { if (s.id === 'B') { entered.resolve(); await gate.promise; } await apply(s); };
+  const switching = f.service.activate('B'); await entered.promise;
+  const changing = f.service.selectProxy('A', 'PROXY', 'old-profile-node', async () => assert.fail('wrong profile'));
+  gate.resolve(); await switching; assert.equal(await changing, false);
+});
+
+test('Profile import preserves numeric credential lexemes through save and re-import', async () => {
+  for (const password of ['12345678901234567890', '001234', '1e3', 'true', '48654786e0504509']) {
+    const f = profileFixture(), p = f.create('A');
+    const source = `proxies:\n  - {name: N, type: trojan, server: example.invalid, port: 443, password: ${password}}\nrules: ['MATCH,DIRECT']\n`;
+    await p.save(source, async () => '');
+    const saved = f.files.get(f.configPath('A'));
+    assert.equal(yaml.parse(saved).proxies[0].password, password);
+    assert.equal(yaml.parse(saved).proxies[0].port, 443);
+    await p.save(saved, async () => '');
+    assert.equal(yaml.parse(f.files.get(f.configPath('A'))).proxies[0].password, password);
+  }
+  const parsed = YamlUtils.parseYamlSafe('secret: &secret 12345678901234567890\nproxies: [{password: *secret}]');
+  assert.equal(parsed.proxies[0].password, '12345678901234567890');
+});
+
+const autoUpdateFilter = load('entry/src/main/ets/common/utils/AutoUpdateFilter.ets', {
+  proxy_core: { ProfileType: { File: 0, Url: 1 } }
+});
+test('Foreground and background auto-update honor disabled profiles, including changes while queued', async () => {
+  const calls = [];
+  const profiles = ['A', 'B', 'C', 'D'].map(id => ({ id, name: id, type: 1, autoUpdate: true,
+    isUpdating: id === 'B', autoUpdateDuration: 60000, lastUpdateDate: 0,
+    loadContext() {}, async update() { calls.push(id); profiles[2].isUpdating = true; } }));
+  profiles[3].type = 0;
+  assert.deepEqual(Array.from(autoUpdateFilter.findAutoUpdateTargets(profiles), p => p.id), ['A', 'C']);
+  const { default: Work } = load('entry/src/main/ets/workschedulerability/ConfigUpdateWorkAbility.ets', {
+    '@kit.BackgroundTasksKit': { WorkSchedulerExtensionAbility: class {} },
+    '@kit.PerformanceAnalysisKit': { hilog: quiet },
+    proxy_core: { SocketProxyService: class { init() {} } },
+    'proxy_core/src/main/ets/ProfileRepo': { ProfileRepo: class {
+      async init() {} async queryAll() { return profiles; }
+      async query(id) { return profiles.find(p => p.id === id); }
+      async updateDownloadMetadata() {}
+    } },
+    '../common/utils/AutoUpdateFilter': autoUpdateFilter
+  });
+  const work = new Work(); work.publishResult = async () => {};
+  await work.runAutoUpdate(0); assert.deepEqual(calls, ['A']);
+});
+
+test('Backup round-trip keeps profile IDs, selections and persisted metadata on a new installation', async () => {
+  const f = profileFixture(), original = f.create('backed-up-id');
+  original.name = 'custom name'; original.url = 'https://example.invalid/sub';
+  original.proxySelected.set('PROXY', 'N2'); original.currentGroupName = 'PROXY';
+  original.customRules = ['DOMAIN,private.invalid,DIRECT']; original.customUA = 'custom-UA';
+  original.isUpdating = true; original.autoUpdateDuration = 7200000; original.flag = 'favorite'; original.overrideMode = 'script';
+  const helpers = load('proxy_core/src/main/ets/profile/ProfileBackup.ets', {
+    '../Profile': { Profile: original.constructor, ProfileType: { File: 0, Url: 1, External: 2 } }
+  });
+  const wire = JSON.parse(JSON.stringify(helpers.backupProfile(original)));
+  assert.equal(wire.proxySelected.PROXY, 'N2'); assert.equal(wire.context, undefined);
+  const vm = viewModelFixture({ profileBackup: helpers }), stored = [];
+  vm.service.context = original.context;
+  vm.service.socketProxy.vailConfig = async () => '';
+  vm.service.profileRepo.addOrUpdate = async p => stored.push(p);
+  f.network.response.result = "proxies: [{name: N2, type: trojan, server: example.invalid, port: 443, password: secret}]\nrules: ['MATCH,DIRECT']";
+  await vm.service.addOrUpdateProfiles([wire]);
+  assert.equal(stored.length, 1); const restored = stored[0];
+  assert.equal(restored.id, original.id); assert.equal(restored.name, original.name);
+  assert.equal(restored.getSelectedMap().PROXY, 'N2'); assert.equal(restored.currentGroupName, 'PROXY');
+  assert.equal(restored.customUA, 'custom-UA'); assert.equal(restored.isUpdating, true);
+  assert.equal(restored.autoUpdateDuration, 7200000); assert.equal(restored.overrideMode, 'script');
+  assert.equal(restored.customRules[0], original.customRules[0]); assert.ok(await restored.check());
+  assert.throws(() => helpers.restoreProfileMetadata({ ...wire, id: '../escape' }), /无效/);
+  await assert.rejects(vm.service.addOrUpdateProfiles([wire, wire]), /重复/);
+  f.clean();
+});
+test('Failed backup restoration does not publish dangling selection or report success', async () => {
+  const calls = [], time = clock();
+  const { default: backup } = load('entry/src/main/ets/common/utils/BackupRestoreUtil.ets', {
+    '../../entryability/ClashViewModel': { default: { addOrUpdateProfiles: async () => { throw new Error('download failed'); } } },
+    'xb_components': { Xb_ToastUtil: { showToast: m => calls.push(m.message) } }
+  }, { ...time, AppStorage: { set: () => assert.fail('must retain current selection') } });
+  assert.equal(await backup.restore({ configList: [], appConfig: { currentProfileId: 'missing' } }), false);
+  assert.ok(calls[0].includes('download failed')); assert.equal(time.timeouts.size, 0);
+});
+
+test('Provider uploads await their own copy and clean up on copy/RPC failures', async () => {
+  const files = new Map(), gates = [deferred(), deferred()]; let next = 0, copyFails = false, rpcFails = false;
+  const { SocketProxyService } = load('proxy_core/src/main/ets/rpc/SocketProxyService.ets', {
+    '../profile/ProfileStorage': { generateUUID: () => String(next++) },
+    '@ohos.file.fs': { default: {
+      copy: async (uri, target) => { await gates[Number(uri)]?.promise; if (copyFails) throw new Error('copy failed'); files.set(target, uri); },
+      unlink: async p => files.delete(p)
+    } },
+    '@kit.CoreFileKit': { fileUri: { getUriFromPath: p => p } }, './IClashManager': rpcGenerated
+  });
+  const service = new SocketProxyService(); service.context = { filesDir: '/files' }; const read = [];
+  service.sendMessageRequest = async (_, [name, file]) => { if (rpcFails) throw new Error('RPC failed'); read.push([name, files.get(file)]); return ''; };
+  const a = service.upLoadProvider({ name: 'A' }, '0'), b = service.upLoadProvider({ name: 'B' }, '1');
+  await flush(); assert.equal(read.length, 0);
+  gates[1].resolve(); await b; gates[0].resolve(); await a;
+  assert.deepEqual(read, [['B', '1'], ['A', '0']]); assert.equal(files.size, 0);
+  copyFails = true; await assert.rejects(service.upLoadProvider({ name: 'C' }, '2'), /copy failed/);
+  assert.equal(read.length, 2); assert.equal(files.size, 0);
+  copyFails = false; rpcFails = true;
+  await assert.rejects(service.upLoadProvider({ name: 'D' }, '3'), /RPC failed/); assert.equal(files.size, 0);
+});
+
+test('Log ownership cancels late acknowledgements and replaces subscriptions without leaking', async () => {
+  const f = viewModelFixture(), gates = [deferred(), deferred()], subscribers = []; let active = 0;
+  f.service.socketProxy.setLogObserver = async callback => {
+    const i = subscribers.length; subscribers.push(callback); await gates[i]?.promise;
+    active++; return () => active--;
+  };
+  const received = [];
+  const first = f.service.startLog(true, d => received.push(d)); await flush();
+  await f.service.startLog(false, () => {}); subscribers[0]('late');
+  gates[0].resolve(); await first; assert.equal(active, 0); assert.equal(received.length, 0);
+  const second = f.service.startLog(true, d => received.push(d)); await flush();
+  const third = f.service.startLog(true, d => received.push(d)); await third;
+  assert.equal(active, 1); gates[1].resolve(); await second; assert.equal(active, 1);
+  subscribers[1]('stale'); subscribers[2]('current'); assert.deepEqual(received, ['current']);
+  await f.service.startLog(true, d => received.push(d)); assert.equal(active, 1);
+  f.service.stopLog(); f.service.stopLog(); assert.equal(active, 0);
+});
+
+test('Deleting a selected profile stops first, clears selection and invalidates rollback; unrelated deletion preserves it', async () => {
+  const f = activationFixture(); await f.service.activate('A'); const calls = [];
+  const stop = f.host.stop; f.host.stop = async () => { calls.push('stop'); await stop(); };
+  const clear = () => { calls.push('clear'); f.state.selected = ''; };
+  await f.service.remove('B', async () => calls.push('erase B'), clear);
+  assert.deepEqual(calls, ['erase B']); assert.equal(f.state.selected, 'A');
+  await f.service.remove('A', async () => calls.push('erase A'), clear);
+  assert.deepEqual(calls, ['erase B', 'stop', 'erase A', 'clear']); assert.equal(f.state.selected, '');
+  f.state.failApply = 'C'; await assert.rejects(f.service.activate('C'), /kernel apply failed/);
+  assert.equal(f.state.applied.filter(id => id === 'A').length, 1, 'deleted snapshot must never be reapplied');
+});
+test('Deleting waits for an in-flight activation and aborts if the selected VPN cannot stop', async () => {
+  const f = activationFixture(); await f.service.activate('A');
+  const gate = deferred(), entered = deferred(), apply = f.host.apply;
+  f.host.apply = async s => { if (s.id === 'B') { entered.resolve(); await gate.promise; } await apply(s); };
+  const switching = f.service.activate('B'); await entered.promise;
+  let removed = false;
+  const deleting = f.service.remove('A', async () => { removed = true; }, () => assert.fail('B must remain selected'));
+  await flush(); assert.equal(removed, false);
+  gate.resolve(); await switching; await deleting; assert.equal(f.state.selected, 'B'); assert.equal(f.state.stopped, 0);
+  f.host.stop = async () => { throw new Error('stop failed'); };
+  await assert.rejects(f.service.remove('B', async () => assert.fail('must not erase'), () => assert.fail('must not clear')), /stop failed/);
+});
+
+test('Deleting via ViewModel clears persisted active selection and leaves unrelated selection intact', async () => {
+  const app = { currentProfileId: 'A', currentProfileName: 'active', currentProxyName: 'node' };
+  const store = new Map([['appConfig', app]]), f = viewModelFixture({ storage: store }), erased = [];
+  f.service.getProfile = async id => ({ loadContext() {}, delete: async () => erased.push(id) });
+  f.service.profileRepo.delete = async id => erased.push(`db:${id}`);
+  await f.service.deleteProfile('B'); assert.equal(store.get('appConfig'), app); assert.ok(!f.calls.includes('stop'));
+  await f.service.deleteProfile('A');
+  assert.equal(store.get('appConfig').currentProfileId, ''); assert.equal(store.get('appConfig').currentProxyName, undefined);
+  assert.equal(store.get('appConfig').currentProfileName, undefined); assert.equal(f.service.desiredRunning, false);
+  assert.ok(f.calls.includes('stop')); assert.deepEqual(erased, ['B', 'db:B', 'A', 'db:A']);
+});
+test('Manual node selection persists only after acknowledgement and never overwrites download metadata', async () => {
+  const f = viewModelFixture({ appConfig: { currentProfileId: 'A' } }), profile = { id: 'A', proxySelected: new Map() }, writes = [];
+  f.service.profileRepo.addOrUpdate = () => assert.fail('must not upsert a stale profile');
+  f.service.profileRepo.updateProxySelection = async (...args) => writes.push(args);
+  f.service.socketProxy.changeProxy = async () => 'unknown node';
+  await f.service.changeProxy(profile, 'PROXY', 'N1'); assert.equal(writes.length, 0); assert.equal(profile.proxySelected.size, 0);
+  f.service.socketProxy.changeProxy = async () => '';
+  await f.service.changeProxy(profile, 'PROXY', 'N2'); assert.deepEqual(writes, [['A', 'PROXY', 'N2']]);
+});
+
+test('Node persistence completes before a subsequent node change or profile activation', async () => {
+  const f = activationFixture(); await f.service.activate('A');
+  const gate = deferred(), entered = deferred(), calls = [];
+  const first = f.service.selectProxy('A', 'PROXY', 'N2', async () => calls.push('N2'), async () => {
+    entered.resolve(); await gate.promise; calls.push('persist N2');
+  });
+  await entered.promise;
+  const second = f.service.selectProxy('A', 'PROXY', 'N3', async () => calls.push('N3'), async () => calls.push('persist N3'));
+  await flush(); assert.deepEqual(calls, ['N2']);
+  gate.resolve(); await Promise.all([first, second]);
+  assert.deepEqual(calls, ['N2', 'persist N2', 'N3', 'persist N3']);
+});
+test('Profile repository saves backup rules and updates node selection without changing metadata', async () => {
+  const writes = [];
+  const { ProfileRepo } = load('proxy_core/src/main/ets/ProfileRepo.ets', {
+    '@kit.ArkData': { relationalStore: { RdbPredicates: class { equalTo() {} } } }, '@kit.ArkTS': { JSON }
+  });
+  const repo = new ProfileRepo(); repo.store = {
+    query: async () => ({ rowCount: 0, close() {} }), insert: async (_, values) => writes.push(values),
+    update: async values => writes.push(values)
+  };
+  await repo.addOrUpdate({ id: 'A', customRules: ['DOMAIN,private.invalid,DIRECT'], getSelectedMap: () => ({ PROXY: 'N1' }) });
+  assert.equal(writes[0].customRules, '["DOMAIN,private.invalid,DIRECT"]');
+  repo.query = async () => ({ getSelectedMap: () => ({ PROXY: 'N1', OTHER: 'keep' }) });
+  await repo.updateProxySelection('A', 'PROXY', 'N2');
+  assert.deepEqual(Object.keys(writes[1]), ['proxySelected']);
+  assert.deepEqual(JSON.parse(writes[1].proxySelected), { PROXY: 'N2', OTHER: 'keep' });
 });

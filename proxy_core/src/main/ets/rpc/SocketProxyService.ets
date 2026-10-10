@@ -261,9 +261,14 @@ export class SocketProxyService implements IClashManager {
     return  (await this.sendMessageRequest(ClashRpcType.updateProvider,[provider.name])) as string
   }
   async upLoadProvider(provider: Provider, uri: string): Promise<string> {
-    const temp = this.context?.filesDir + "/temp_provider"
-    fs.copy(uri, fileUri.getUriFromPath(temp))
-    return  (await this.sendMessageRequest(ClashRpcType.uploadProvider,[provider.name, temp])) as string
+    if (!this.context) throw new Error('Provider 上传服务尚未初始化');
+    const temp = `${this.context.filesDir}/provider-${generateUUID()}.tmp`;
+    try {
+      await fs.copy(uri, fileUri.getUriFromPath(temp));
+      return await this.sendMessageRequest(ClashRpcType.uploadProvider, [provider.name, temp]) as string;
+    } finally {
+      try { await fs.unlink(temp); } catch (_) {}
+    }
   }
   async updateGeoData(geoName: string, geoType: string): Promise<string>{
     return await (this.sendMessageRequest(ClashRpcType.updateGeoData,[geoName, geoType])) as string

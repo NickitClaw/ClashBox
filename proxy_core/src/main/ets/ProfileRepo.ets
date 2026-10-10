@@ -184,6 +184,7 @@ export class ProfileRepo {
       proxySelected: JSON.stringify(jsonObject),
       customUA: details.customUA,
       flag: details.flag,
+      customRules: JSON.stringify(details.customRules ?? []),
       // 如果未定义则默认存储 'rule'
       overrideMode: details.overrideMode ? details.overrideMode : 'rule'
     }
@@ -194,6 +195,17 @@ export class ProfileRepo {
       await this.store!.insert("Profiles", input)
       return 0
     }
+  }
+
+  // Update only selection, using current metadata rather than a potentially stale page object.
+  async updateProxySelection(id: string, group: string, name: string): Promise<void> {
+    const profile = await this.query(id);
+    if (!profile) throw new Error('配置不存在或已被删除');
+    const selected = profile.getSelectedMap();
+    selected[group] = name;
+    const predicates = new relationalStore.RdbPredicates('Profiles');
+    predicates.equalTo('id', id);
+    await this.store!.update({ proxySelected: JSON.stringify(selected) }, predicates);
   }
 
   // Background refresh must neither resurrect deleted rows nor overwrite UI settings.

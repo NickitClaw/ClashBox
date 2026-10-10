@@ -1144,6 +1144,7 @@ struct Index {
     EventHub.off(EventKey.StartedClash)
     EventHub.off(EventKey.ExportLog)
     EventHub.off(EventKey.ClearLog)
+    ClashViewModel.stopLog()
     EventHub.off(EventKey.StartLog)
     EventHub.off(EventKey.LoadConfigStr)
     EventHub.off(EventKey.SwitchButtonPosition)

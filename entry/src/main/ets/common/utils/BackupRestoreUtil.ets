@@ -1,4 +1,5 @@
-import { ClashConfig, Profile, migrateSnifferConfig } from "proxy_core";
+import { ProfileBackup, backupProfile } from 'proxy_core/src/main/ets/profile/ProfileBackup';
+import { ClashConfig, migrateSnifferConfig } from "proxy_core";
 import { Xb_FileUtils, Xb_GetResourceString, Xb_PreferenceUtil, Xb_ToastUtil } from "xb_components";
 import { AppConfig, UIConfig } from "../../entryability/AppState";
 import ClashViewModel from "../../entryability/ClashViewModel";
@@ -13,7 +14,7 @@ export interface BackupConfig {
   uiConfig: UIConfig
   configSort: string
   clashConfig: ClashConfig
-  configList: Profile[]
+  configList: ProfileBackup[]
 }
 
 class BackupRestoreUtil {
@@ -30,7 +31,7 @@ class BackupRestoreUtil {
       const uiConfig: UIConfig = AppStorage.get<UIConfig>("uiConfig") ?? new UIConfig()
       const configSort: string = await Xb_PreferenceUtil.get('config_sort', '')
       const clashConfig: ClashConfig = AppStorage.get<ClashConfig>("clashConfig") ?? new ClashConfig()
-      const configList = await ClashViewModel.getProfiles()
+      const configList = (await ClashViewModel.getProfiles()).map(backupProfile)
       const backupConfig: BackupConfig = {
         appConfig: appConfig,
         uiConfig: uiConfig,
@@ -48,76 +49,38 @@ class BackupRestoreUtil {
     }
   }
 
-  public async restore(config: BackupConfig | null = null) {
-    if (config === null) {
-      Xb_FileUtils.openFile(BackupRestoreUtil.context).then(async (uri) => {
-        if (uri) {
-          config = await Xb_FileUtils.importDataByFile<BackupConfig>(uri)
-          if (config) {
-            config.appConfig.clashCore = resolveCoreMode(config.appConfig.clashCore, BuildProfile.DEBUG)
-            AppStorage.set("appConfig", config.appConfig)
-            const type = getJsonArrayType(config.uiConfig.isShowHomeCard)
-            if (type === 'boolean') {
-              console.log(`检查到旧版本数据，开始兼容`)
-              const str = config.uiConfig.isShowHomeCard
-              // 转化字符串
-              config.uiConfig.isShowHomeCard = filterStringsByBooleans(str, 'string') as string
-              console.log(`旧版本数据转化为：${config.uiConfig.isShowHomeCard}`)
-            }
-            AppStorage.set("uiConfig",  config.uiConfig)
-            AppStorage.set("clashConfig", migrateSnifferConfig(config.clashConfig))
-            console.info(`ClashBoxConfig.restore 配置列表：${JSON.stringify(config.configList)}`)
-            try {
-              await ClashViewModel.addOrUpdateProfiles(config.configList)
-            } catch (err) {
-              console.error(`ClashBox Restore ClashViewModel 配置恢复失败, name: ${err.name}, message: ${err.message}`)
-            }
-            Xb_PreferenceUtil.put('config_sort', config.configSort).then(() => {
-              Xb_ToastUtil.showToast({ message: $r('app.string.import_success') })
-              // 重启应用
-              setTimeout(() => {
-                Xb_ToastUtil.restartApp()
-              }, 2000)
-            }).catch((err: Error) => {
-              console.error(`ClashBox Restore Xb_PreferenceUtil.put 配置列表排序恢复失败, name: ${err.name}, message: ${err.message}`)
-            })
-          } else {
-            console.error(`ClashBoxConfig.restore 配置解析失败`)
-            Xb_ToastUtil.showToast({ message: Xb_GetResourceString($r('app.string.import_failed'), this) + '配置解析失败' })
-          }
-        } else {
-          Xb_ToastUtil.showToast({ message: Xb_GetResourceString($r('app.string.import_failed'), BackupRestoreUtil.context) + '文件uri不存在' })
-          console.error(`ClashBoxConfig.restore 文件uri不存在`)
-        }
-      })
-    } else {
-      // 外部提供config
-      config.appConfig.clashCore = resolveCoreMode(config.appConfig.clashCore, BuildProfile.DEBUG)
-      AppStorage.set("appConfig", config.appConfig)
-      const type = getJsonArrayType(config.uiConfig.isShowHomeCard)
-      if (type === 'boolean') {
-        console.log(`检查到旧版本数据，开始兼容`)
-        const str = config.uiConfig.isShowHomeCard
-        // 转化字符串
-        config.uiConfig.isShowHomeCard = filterStringsByBooleans(str, 'string') as string
-        console.log(`旧版本数据转化为：${config.uiConfig.isShowHomeCard}`)
+  public async restore(config: BackupConfig | null = null): Promise<boolean> {
+    try {
+      if (config === null) {
+        const uri = await Xb_FileUtils.openFile(BackupRestoreUtil.context);
+        if (!uri) return false;
+        config = await Xb_FileUtils.importDataByFile<BackupConfig>(uri);
       }
-      AppStorage.set("uiConfig",  config.uiConfig)
-      AppStorage.set("clashConfig", migrateSnifferConfig(config.clashConfig))
-      console.info(`ClashBoxConfig.restore 配置列表：${JSON.stringify(config.configList)}`)
-      ClashViewModel.addOrUpdateProfiles(config.configList).then(() => {
-        Xb_ToastUtil.showToast({ message: $r('app.string.import_success') })
-        // 重启应用
-        setTimeout(() => {
-          Xb_ToastUtil.restartApp()
-        }, 2000)
-      })
-        .catch((err: Error) => {
-          console.error(`ClashBox Restore 配置恢复失败 ${err.name} ${err.message}`)
-        })
+      if (!config || !Array.isArray(config.configList)) throw new Error('备份配置解析失败');
+      // Do not publish selection or report success until every profile has been restored.
+      await ClashViewModel.addOrUpdateProfiles(config.configList);
+      const app = config.appConfig;
+      app.clashCore = resolveCoreMode(app.clashCore, BuildProfile.DEBUG);
+      if (app.currentProfileId && !await ClashViewModel.getProfile(app.currentProfileId)) {
+        app.currentProfileId = '';
+        app.currentProfileName = undefined;
+        app.currentProxyName = undefined;
+      }
+      if (getJsonArrayType(config.uiConfig.isShowHomeCard) === 'boolean') {
+        config.uiConfig.isShowHomeCard = filterStringsByBooleans(config.uiConfig.isShowHomeCard, 'string') as string;
+      }
+      await Xb_PreferenceUtil.put('config_sort', config.configSort ?? '[]');
+      AppStorage.set('uiConfig', config.uiConfig);
+      AppStorage.set('clashConfig', migrateSnifferConfig(config.clashConfig));
+      AppStorage.set('appConfig', app);
+      Xb_ToastUtil.showToast({ message: $r('app.string.import_success') });
+      setTimeout(() => { Xb_ToastUtil.restartApp(); }, 2000);
+      return true;
+    } catch (err) {
+      Xb_ToastUtil.showToast({ message: `配置恢复失败：${(err as Error).message}` });
+      return false;
     }
   }
-
 }
 
 export default new BackupRestoreUtil()

@@ -2,6 +2,7 @@ import { VpnPhase, VpnSnapshot } from 'proxy_core/src/main/ets/rpc/RpcContract.g
 import { initialVpnState } from 'proxy_core/src/main/ets/rpc/VpnLifecycleState';
 import { ConfigActivationService, ConfigActivationHost, ConfigSnapshot } from '../common/services/ConfigActivationService';
 import { ProfileStorage } from 'proxy_core/src/main/ets/profile/ProfileStorage';
+import { ProfileBackup, restoreProfileMetadata } from 'proxy_core/src/main/ets/profile/ProfileBackup';
 import { assertNativeCompatibility } from 'proxy_core/src/main/ets/rpc/NativeCompatibility';
 import { ProfileRepo } from "proxy_core/src/main/ets/ProfileRepo";
 import { Context, Want } from "@kit.AbilityKit";
@@ -152,51 +153,45 @@ export class ClashViewModel {
   }
 
   // 批量插入配置
-  async addOrUpdateProfiles(data: Profile[]) {
-    for (const profile of data) {
-      let newProfile = new Profile(profile.type, profile.url)
-      const old = await this.profileRepo.query(profile.id)
-      console.log(`old配置 ${old ? old.name : '本地没有old配置'}`)
-      if (old) {
-        console.log(`配置${profile.name}在数据库中已存在`)
-        newProfile = old
-      }
-      if (profile.type === ProfileType.Url) {
+  async addOrUpdateProfiles(data: ProfileBackup[]) {
+    const profiles = data.map((item: ProfileBackup) => restoreProfileMetadata(item));
+    const ids = new Set<string>();
+    for (const profile of profiles) {
+      if (ids.has(profile.id)) throw new Error('备份包含重复的配置 ID');
+      ids.add(profile.id);
+    }
+    for (const newProfile of profiles) {
+      const name = newProfile.name;
+      newProfile.loadContext(this.context);
+      if (newProfile.type === ProfileType.Url) {
         // URL配置
-        newProfile.loadContext(this.context)
-        newProfile.name = profile.name
-        newProfile.autoUpdate = profile.autoUpdate
-        newProfile.autoUpdateDuration = profile.autoUpdateDuration ?? 10
-        console.log(`配置${profile.name}基础设置完成`)
-        await newProfile.checkAndUpdate(this.socketProxy)
+        await newProfile.update(this.socketProxy, newProfile.customRules)
       } else {
         // 本地文件配置
         try {
           let filePicker = new picker.DocumentViewPicker(this.context!)
           let options = new picker.DocumentSelectOptions()
-          ClashViewModel.promptAction.showToast({ message: `${Xb_GetResourceString($r('app.string.file_config_restore_toast_1'), this.context)} ${profile.name}` })
+          ClashViewModel.promptAction.showToast({ message: `${Xb_GetResourceString($r('app.string.file_config_restore_toast_1'), this.context)} ${name}` })
           const documentSelectResult = await filePicker.select(options)
+          if (!documentSelectResult[0]) throw new Error('已取消配置文件恢复');
           newProfile.url = documentSelectResult[0]
-          newProfile.name = decodeURIComponent(newProfile.url.substring(newProfile.url.lastIndexOf('/') + 1)) ?? profile.name
-          console.log(`ClashBox Restore 配置${newProfile.name} 地址: ${newProfile.url} 选择完成`)
         } catch (err) {
           console.error(`ClashBox Restore 文件选择失败 ${err.name} ${err.message}`)
-          // 导入失败后跳过
-          continue
+          throw new Error('配置文件恢复未完成');
         }
         newProfile.loadContext(this.context)
-        console.log(`配置${profile.name}基础设置完成`)
-        await newProfile.saveByUri(newProfile.url, (path: string): Promise<string> => this.socketProxy.vailConfig(path))
+        await newProfile.saveByUri(newProfile.url, (path: string): Promise<string> => this.socketProxy.vailConfig(path), newProfile.customRules)
       }
       const isExists = await newProfile.check();
       if (isExists) {
+        newProfile.name = name ?? newProfile.name;
         console.log(`配置${newProfile.name}已发现`)
         await this.profileRepo.addOrUpdate(newProfile)
-        EventHub.sendEvent(EventKey.FetchProfile, null)
       } else {
         throw new Error('配置文件不存在，恢复失败')
       }
     }
+    EventHub.sendEvent(EventKey.FetchProfile, null)
   }
 
   async addOrUpdateProfileByFile(name: string, path: string, id: string | null) {
@@ -279,9 +274,14 @@ export class ClashViewModel {
   }
   async changeProxy(profile: Profile, g:string, p: string){
     try {
-      profile.proxySelected?.set(g, p)
-      await this.profileRepo.addOrUpdate(profile)
-      await this.socketProxy.changeProxy(g, p)
+      const changed = await this.activation.selectProxy(profile.id, g, p, async () => {
+        const error = await this.socketProxy.changeProxy(g, p);
+        if (error !== '') throw new Error(error);
+      }, async () => {
+        profile.proxySelected?.set(g, p);
+        await this.profileRepo.updateProxySelection(profile.id, g, p);
+      });
+      if (!changed) throw new Error('当前配置已切换，请刷新节点列表');
       // 同步新节点名到共享 preferences，供 VPN 扩展进程刷新常驻通知标题
       if (this.context) {
         syncVpnNoticePrefs(this.context, p)
@@ -407,15 +407,29 @@ export class ClashViewModel {
     }
   }
 
-  job?: (()=>void)
-  async startLog(enable: boolean, callback: (d: LogInfo) => void){
-      if(enable){
-        this.job = await this.socketProxy.setLogObserver((message)=>{
-          callback(message)
-        })
-      }else{
-        this.job?.()
-      }
+  private logJob?: () => void;
+  private logGeneration: number = 0;
+
+  stopLog(): void {
+    ++this.logGeneration;
+    const cancel = this.logJob;
+    this.logJob = undefined;
+    cancel?.();
+  }
+
+  async startLog(enable: boolean, callback: (d: LogInfo) => void): Promise<void> {
+    this.stopLog();
+    if (!enable) return;
+    const generation = this.logGeneration;
+    try {
+      const cancel = await this.socketProxy.setLogObserver((message: LogInfo) => {
+        if (generation === this.logGeneration) callback(message);
+      });
+      if (generation !== this.logGeneration) cancel();
+      else this.logJob = cancel;
+    } catch (e) {
+      if (generation === this.logGeneration) console.warn(`日志订阅失败：${(e as Error).message}`);
+    }
   }
 
   async updateProfile(profile: Profile){
@@ -428,13 +442,29 @@ export class ClashViewModel {
     return await this.profileRepo.query(id)
   }
   async deleteProfile(id: string): Promise<void>{
-    let p = await this.getProfile(id)
-    if (p) {
-      p.loadContext(this.context)
-      await p.delete()
-    }
-    await this.profileRepo.delete(id)
-    EventHub.sendEvent(EventKey.FetchProfile, null)
+    // Keep lock order identical to StartVpn: VPN operations -> config operations.
+    await this.queueVpnOperation(async () => {
+      await this.activation.remove(id, async () => {
+        const profile = await this.getProfile(id);
+        if (profile) {
+          profile.loadContext(this.context);
+          await profile.delete();
+        }
+        await this.profileRepo.delete(id);
+      }, () => {
+        const app = AppStorage.get<AppConfig>('appConfig') || cardManager.getAppConfig() || new AppConfig();
+        const next = JSON.parse(JSON.stringify(app)) as AppConfig;
+        next.currentProfileId = '';
+        next.currentProfileName = undefined;
+        next.currentProxyName = undefined;
+        cardManager.setAppConfig(next);
+        AppStorage.setOrCreate('appConfig', next);
+        this.proxyGroups = [];
+        if (this.context) syncVpnNoticePrefs(this.context);
+        EventHub.sendEvent(EventKey.FetchProxyGroup, null);
+      });
+      EventHub.sendEvent(EventKey.FetchProfile, null);
+    });
   }
   async getConnections(){
      return await this.socketProxy.queryConnections()
@@ -639,6 +669,8 @@ export class ClashViewModel {
       try { EventHub.sendEvent(EventKey.FetchProxyGroup, null); } catch (_) { console.warn('配置列表刷新失败'); }
     },
     stop: async (): Promise<void> => {
+      this.desiredRunning = false;
+      ++this.intentGeneration;
       if (!await this.socketProxy.stopClash()) throw new Error('内核未确认 VPN 停止');
       await this.refreshVpnState();
     }
