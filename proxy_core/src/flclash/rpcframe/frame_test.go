@@ -3,6 +3,7 @@ package rpcframe
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"io"
 	"net"
 	"strings"
@@ -185,6 +186,43 @@ func TestFinalResponseWaitsForPeerClose(t *testing.T) {
 type shortReadDeadlineConn struct {
 	net.Conn
 	deadline time.Time
+}
+
+func TestReceiptClosesServerBeforeClientReleasesDescriptor(t *testing.T) {
+	for _, final := range []bool{true, false} {
+		t.Run(fmt.Sprintf("final=%v", final), func(t *testing.T) {
+			server, client := net.Pipe()
+			defer client.Close()
+			_ = client.SetDeadline(time.Now().Add(time.Second))
+			session := NewSession(server)
+			defer session.Close()
+			session.WatchDisconnect()
+			go func() { <-session.Done(); session.Close() }()
+			sent := make(chan error, 1)
+			go func() { sent <- session.Send([]byte("result"), final) }()
+			if _, err := Read(client); err != nil {
+				t.Fatal(err)
+			}
+			if err := <-sent; err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case <-session.Done():
+				t.Fatal("server closed before ArkTS consumed the response")
+			default:
+			}
+			if _, err := client.Write([]byte{0x06}); err != nil {
+				t.Fatal(err)
+			}
+			var b [1]byte
+			if _, err := client.Read(b[:]); err != io.EOF {
+				t.Fatalf("expected server EOF while client is still open, got %v", err)
+			}
+			if err := session.Send([]byte("late"), final); err == nil {
+				t.Fatal("accepted a callback after receipt/cancellation")
+			}
+		})
+	}
 }
 
 func (c *shortReadDeadlineConn) SetReadDeadline(deadline time.Time) error {

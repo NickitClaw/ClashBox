@@ -222,14 +222,20 @@ test('Native and remote compatibility checks reject legacy or mixed builds', () 
   }
   assert.throws(() => rpcContract.assertRpcCompatibility('{'), e => e.code === 'INCOMPATIBLE_VERSION');
 });
-function rpcSocketFixture() {
+function rpcSocketFixture({ autoClose = true } = {}) {
   const clients = [], time = clock();
   const snapshots = new Map();
   class Socket {
     constructor() { this.handlers = {}; this.closed = false; this.requests = []; clients.push(this); }
     on(name, fn) { this.handlers[name] = fn; } off(name) { delete this.handlers[name]; }
     async connect(options) { this.path = options.address.address; }
-    async send(value) { this.requests.push(JSON.parse(new rpcFrames.RpcFrameBuffer().push(new Uint8Array(value.data))[0])); }
+    async send(value) {
+      const bytes = new Uint8Array(value.data);
+      if (bytes.length === 1 && bytes[0] === 6) {
+        this.receipts = (this.receipts || 0) + 1;
+        if (autoClose) this.handlers.close?.();
+      } else this.requests.push(JSON.parse(new rpcFrames.RpcFrameBuffer().push(bytes)[0]));
+    }
     async close() { this.closed = true; }
     respond(response) { this.bytes(rpcFrames.encodeRpcFrame(JSON.stringify(response))); }
     bytes(bytes) { this.handlers.message?.({ message: Uint8Array.from(Buffer.from(bytes)).buffer }); }
@@ -238,11 +244,120 @@ function rpcSocketFixture() {
     '@kit.NetworkKit': { socket: { constructLocalSocketInstance: () => new Socket() } },
     '@kit.ArkTS': { JSON, util }, '@kit.CoreFileKit': { fileIo: { access: async () => true, unlink: async path => snapshots.delete(path) } },
     '../profile/ProfileStorage': { generateUUID: () => 'test', writeProfileText: async (path, text) => snapshots.set(path, text) },
+    './RpcSocketLifecycle': load('proxy_core/src/main/ets/rpc/RpcSocketLifecycle.ets', {}, time),
     './RpcFrame': rpcFrames, './IClashManager': rpcGenerated, './RpcContract': rpcContract, './RpcContract.generated': rpcGenerated
   }, time);
   const service = new SocketProxyService(); service.init({ filesDir: '/mock', tempDir: '/tmp' });
   return { service, clients, time, snapshots };
 }
+test('Complete responses keep descriptors alive until server EOF across batches and state polls', async () => {
+  const f = rpcSocketFixture({ autoClose: false }); f.service.ensureCompatibility = async () => compatibleCore();
+  for (let batch = 0; batch < 3; batch++) {
+    const names = Array.from({ length: 20 }, (_, i) => `node-${batch * 20 + i}`);
+    const pending = f.service.healthCheckBatch(names, 3000);
+    await flush(); const client = f.clients.at(-1);
+    const frame = Buffer.from(rpcFrames.encodeRpcFrame(JSON.stringify({ protocolVersion: 1, method: 32,
+      result: JSON.stringify(names.map((name, i) => ({ name, value: i ? -1 : 50 }))) })));
+    client.bytes(frame.subarray(0, frame.length - 1));
+    assert.equal(client.receipts, undefined, 'partial response must not be acknowledged');
+    client.bytes(frame.subarray(frame.length - 1));
+    assert.equal((await pending).size, 20);
+    assert.equal(client.receipts, 1); assert.equal(client.closed, false, 'old recv thread may still own this fd');
+    const state = f.service.queryVpnState(); await flush();
+    const poll = f.clients.at(-1);
+    poll.respond({ protocolVersion: 1, method: 1, result: JSON.stringify({ phase: 'stopped', running: false,
+      desiredRunning: false, startedAt: 0, generation: 0, error: '' }) });
+    assert.equal((await state).running, false); assert.equal(poll.closed, false);
+    // EOF events may arrive out of order; each connection owns its release.
+    poll.handlers.close(); client.handlers.close();
+    assert.ok(client.closed && poll.closed); assert.equal(f.time.timeouts.size, 0);
+  }
+});
+test('Receipt timeout or send failure releases resources without rejecting a decoded result', async () => {
+  for (const kind of ['timeout', 'send failure']) {
+    const f = rpcSocketFixture({ autoClose: false }); f.service.ensureCompatibility = async () => compatibleCore();
+    const pending = f.service.getVersion(); await flush(); const client = f.clients[0];
+    if (kind === 'send failure') client.send = async () => { throw new Error('receipt failed'); };
+    client.respond({ protocolVersion: 1, method: 33, result: 'core' });
+    assert.equal(await pending, 'core');
+    if (kind === 'timeout') {
+      assert.equal(client.closed, false); assert.equal(f.time.timeouts.size, 1);
+      [...f.time.timeouts.values()][0]();
+    }
+    await flush(); assert.equal(client.closed, true); assert.equal(f.time.timeouts.size, 0);
+  }
+});
+test('Request timeout cancels through the peer; late responses cannot change the result', async () => {
+  const f = rpcSocketFixture({ autoClose: false }); f.service.ensureCompatibility = async () => compatibleCore();
+  const rejected = assert.rejects(f.service.getVersion(), /RPC 请求超时/); await flush();
+  const client = f.clients[0]; [...f.time.timeouts.values()][0](); await rejected;
+  assert.equal(client.receipts, 1); assert.equal(client.closed, false);
+  client.respond({ protocolVersion: 1, method: 33, result: 'late' });
+  client.handlers.close(); assert.equal(client.closed, true); assert.equal(f.time.timeouts.size, 0);
+});
+test('Readiness performs a real RPC and retires its receiver through server EOF', async () => {
+  const f = rpcSocketFixture({ autoClose: false });
+  const pending = f.service.isSocketReady(); await flush(); const client = f.clients[0];
+  assert.equal(client.requests[0].method, 34);
+  client.respond({ protocolVersion: 1, method: 34, result: JSON.stringify(compatibleCore()) });
+  assert.equal(await pending, true); assert.equal(client.receipts, 1); assert.equal(client.closed, false);
+  client.handlers.close(); assert.equal(f.time.timeouts.size, 0);
+});
+test('Stream cancellation waits for server EOF and releases the descriptor once', async () => {
+  const f = rpcSocketFixture({ autoClose: false }); f.service.ensureCompatibility = async () => compatibleCore();
+  const pending = f.service.setLogObserver(() => assert.fail('cancelled stream delivered data')); await flush();
+  const client = f.clients[0]; client.respond({ protocolVersion: 1, method: 22, result: '', streamReady: true });
+  const stop = await pending; stop(); stop();
+  assert.equal(client.receipts, 1); assert.equal(client.closed, false);
+  client.respond({ protocolVersion: 1, method: 22, result: 'late' });
+  client.handlers.close(); assert.equal(client.closed, true); assert.equal(f.time.timeouts.size, 0);
+});
+test('VPN response closes only after receipt, disconnect or bounded acknowledgement timeout', async () => {
+  for (const kind of ['receipt', 'disconnect', 'timeout']) {
+    const f = vpnFixture(); let sends = 0, closes = 0;
+    f.service.sendClient = async () => { sends++; };
+    f.service.onRemoteMessage = async () => true;
+    const client = { clientId: 42, close: async () => { closes++; } };
+    await f.service.onRemoteMessageRequest(client, { message: rpcFrames.encodeRpcFrame(JSON.stringify({ protocolVersion: 1, method: 13, params: [] })) });
+    assert.equal(sends, 1); assert.equal(closes, 0); assert.equal(f.time.timeouts.size, 1);
+    if (kind === 'receipt') await f.service.onRemoteMessageRequest(client, { message: new Uint8Array([6]).buffer });
+    else if (kind === 'disconnect') f.service.onClientClosed(42);
+    else [...f.time.timeouts.values()][0]();
+    assert.equal(closes, kind === 'disconnect' ? 0 : 1);
+    assert.equal(f.time.timeouts.size, 0); assert.equal(f.service.frames.size, 0);
+  }
+});
+test('VPN cancellation prevents a pending operation from writing to a closed connection', async () => {
+  const f = vpnFixture(), gate = deferred(); let sends = 0;
+  f.service.sendClient = async () => { sends++; };
+  f.service.onRemoteMessage = async () => { await gate.promise; return true; };
+  const client = { clientId: 42, close: async () => {} };
+  const pending = f.service.onRemoteMessageRequest(client, { message: rpcFrames.encodeRpcFrame(JSON.stringify({ protocolVersion: 1, method: 13, params: [] })) });
+  await flush(); await f.service.onRemoteMessageRequest(client, { message: new Uint8Array([6]).buffer });
+  gate.resolve(); await pending; assert.equal(sends, 0); assert.equal(f.time.timeouts.size, 0);
+});
+test('VPN server releases pooled clients even when explicit close emits no event', async () => {
+  const f = vpnFixture(); f.service.init = async () => {}; f.service.sendClient = async () => {};
+  f.service.onRemoteMessage = async () => true;
+  const server = { handlers: {}, async listen() {}, on(name, fn) { this.handlers[name] = fn; } };
+  const { SocketStubService } = load('proxy_core/src/main/ets/rpc/SocketStubService.ets', {
+    '@kit.NetworkKit': { socket: { constructLocalSocketServerInstance: () => server } },
+    './FlClashVpnService': { FlClashVpnService: class { constructor() { return f.service; } } },
+    '@kit.CoreFileKit': { fileIo: { access: async () => false } }, 'libflclash.so': { startIpc() {} }
+  });
+  const stub = new SocketStubService({ filesDir: '/mock' }); stub.lockVpn = async () => {};
+  await stub.startService(1);
+  for (let clientId = 0; clientId < 10; clientId++) {
+    const client = { clientId, handlers: {}, on(name, fn) { this.handlers[name] = fn; },
+      off(name) { delete this.handlers[name]; }, async close() {} };
+    server.handlers.connect(client); assert.equal(stub.clientPool.size, 1);
+    await f.service.onRemoteMessageRequest(client, { message: rpcFrames.encodeRpcFrame(JSON.stringify({ protocolVersion: 1, method: 13, params: [] })) });
+    if (clientId % 2) client.handlers.close();
+    else await f.service.onRemoteMessageRequest(client, { message: new Uint8Array([6]).buffer });
+    assert.equal(stub.clientPool.size, 0); assert.equal(Object.keys(client.handlers).length, 0);
+    assert.equal(f.time.timeouts.size, 0);
+  }
+});
 test('Concurrent business calls wait for one compatibility handshake, then use the correct endpoints', async () => {
   const f = rpcSocketFixture();
   const version = f.service.getVersion(), start = f.service.getRuntime(); await flush();
@@ -395,13 +510,17 @@ test('Concurrent RPC connections do not share UTF-8 state; send failures reject 
   class Socket {
     constructor() { this.handlers = {}; this.closed = false; clients.push(this); }
     on(n, fn) { this.handlers[n] = fn; } off(n) { delete this.handlers[n]; }
-    async connect() {} async send() { if (failSend) throw new Error('injected send failure'); }
+    async connect() {} async send(value) {
+      if (failSend) throw new Error('injected send failure');
+      if (value.data.byteLength === 1) this.handlers.close?.();
+    }
     async close() { this.closed = true; }
     message(bytes) { const b = Uint8Array.from(bytes); this.handlers.message({ message: b.buffer }); }
   }
   const mod = load('proxy_core/src/main/ets/rpc/SocketProxyService.ets', {
     '@kit.NetworkKit': { socket: { constructLocalSocketInstance: () => new Socket() } },
     '@kit.ArkTS': { JSON, util }, '@kit.CoreFileKit': { fileIo: { access: async () => true } },
+    './RpcSocketLifecycle': load('proxy_core/src/main/ets/rpc/RpcSocketLifecycle.ets', {}, time),
     './RpcFrame': rpcFrames, './IClashManager': rpcGenerated, './RpcContract': rpcContract, './RpcContract.generated': rpcGenerated
   }, time);
   const service = new mod.SocketProxyService(); service.init({ filesDir: '/mock' });
@@ -743,6 +862,7 @@ function vpnFixture({ failTun = false, stopGate, allowVpn = true } = {}) {
   const common = load('proxy_core/src/main/ets/rpc/CommonVpnService.ets', { '@kit.NetworkKit': network, './RpcFrame': rpcFrames });
   const mod = load('proxy_core/src/main/ets/rpc/FlClashVpnService.ets', {
     '@kit.NetworkKit': network, '@kit.ArkTS': { JSON, util }, './CommonVpnService': common, './RpcFrame': rpcFrames,
+    './RpcSocketLifecycle': load('proxy_core/src/main/ets/rpc/RpcSocketLifecycle.ets', {}, time),
     './IClashManager': rpcGenerated, './RpcContract': rpcContract, './RpcContract.generated': rpcGenerated,
     './VpnLifecycleState': lifecycleModule,
     'libflclash.so': {
@@ -751,7 +871,7 @@ function vpnFixture({ failTun = false, stopGate, allowVpn = true } = {}) {
       startListener: () => calls.push('startListener'), stopListener: () => calls.push('stopListener')
     },
     './VpnNoticeController': { VpnNoticeController: class { async start() {} async stop() {} }, publishReconnectNotice: async () => calls.push('reconnectNotice') }
-  }, { ...time, setTimeout: fn => { queueMicrotask(fn); return 1; } });
+  }, { ...time, setTimeout: (fn, ms) => { if (ms === 5000) return time.setTimeout(fn); queueMicrotask(fn); return -1; } });
   const service = new mod.FlClashVpnService({ filesDir: '/mock/files' }, undefined, allowVpn);
   service.ParseConfig = () => ({}); service.probeKernelRpc = async () => true;
   return { service, calls, time, get attempts() { return attempts; } };

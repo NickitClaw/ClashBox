@@ -6,7 +6,8 @@
     "validated-rpc",
     "confirmed-tun-lifecycle",
     "stream-ready-ack",
-    "vpn-state-snapshot"
+    "vpn-state-snapshot",
+    "response-receipt-close"
   ],
   "errors": [
     "INVALID_REQUEST",

@@ -1,4 +1,5 @@
 import { encodeRpcFrame, RpcFrameBuffer } from './RpcFrame';
+import { closeRpcSocket, releaseRpcSocket } from './RpcSocketLifecycle';
 import { generateUUID, writeProfileText } from '../profile/ProfileStorage';
 import { socket, vpnExtension } from '@kit.NetworkKit';
 import { createRpcRequest, decodeRpcResponse, rpcMethod, assertRpcCompatibility, RpcError } from './RpcContract';
@@ -154,27 +155,19 @@ export class SocketProxyService implements IClashManager {
   }
 
   /**
-   * 轻量探测 Go IPC socket 是否可连接(只 connect, 不发任何 RPC)。
-   * 仅用于等待监听器就绪；兼容性由 ensureCompatibility 握手单独确认。
+   * 用完整 RPC 探测监听器，避免 connect 后立刻 close 遗留接收线程。
+   * 兼容性由 ensureCompatibility 握手单独确认。
    * @returns true=可连接; 文件不存在/连接失败均返回 false
    */
   async isSocketReady(): Promise<boolean> {
-    const socketPath = this.context?.filesDir + '/clash_go.sock';
-    if (!socketPath) return false;
+    if (!this.context) return false;
     try {
-      if (!await fileIo.access(socketPath)) return false;
-      const client = socket.constructLocalSocketInstance();
-      return await new Promise<boolean>((resolve) => {
-        client.connect({ address: { address: socketPath }, timeout: 1000 }).then(() => {
-          try { client.close(); } catch (_) {}
-          resolve(true);
-        }).catch(() => {
-          try { client.close(); } catch (_) {}
-          resolve(false);
-        });
-      });
+      await this.sendMessageRequest(ClashRpcType.GetCapabilities, []);
+      return true;
     } catch (e) {
-      return false;
+      // A protocol error still proves that a server replied. Let the explicit
+      // compatibility check report it instead of repeatedly restarting a core.
+      return e instanceof RpcError;
     }
   }
 
@@ -361,10 +354,12 @@ export class SocketProxyService implements IClashManager {
       const client = socket.constructLocalSocketInstance();
       const frames = new RpcFrameBuffer();
       let settled = false;
+      let connected = false;
       let timeoutId = -1;
       const cleanup = () => {
         clearTimeout(timeoutId);
-        closeRpcSocket(client);
+        if (connected) releaseRpcSocket(client);
+        else closeRpcSocket(client);
       };
       const fail = (error: Error | string) => {
         if (settled) return;
@@ -387,8 +382,8 @@ export class SocketProxyService implements IClashManager {
           }
         } catch (e) { fail(e as Error); }
       });
-      client.on('close', () => { fail('连接已关闭，未收到完整响应'); });
-      client.on('error', (e: Error) => { fail(e); });
+      client.on('close', () => { connected = false; fail('连接已关闭，未收到完整响应'); });
+      client.on('error', (e: Error) => { connected = false; fail(e); });
       timeoutId = setTimeout(() => { fail(`RPC 请求超时（方法 ${method}）`); }, (method === ClashRpcType.GetCapabilities || method === ClashRpcType.queryTunnelState) ? 3000 : 60000);
       const connect = async (): Promise<void> => {
         let path = this.context?.filesDir + '/clash_go.sock';
@@ -399,6 +394,7 @@ export class SocketProxyService implements IClashManager {
         if (settled) return;
         await tryConnect(client, path, 3, 500);
         if (settled) { client.close().catch(() => {}); return; }
+        connected = true;
         this.active = true;
         await client.send({ data: encodeRpcFrame(JSON.stringify(request)) });
       };
@@ -419,12 +415,14 @@ export class SocketProxyService implements IClashManager {
       const frames = new RpcFrameBuffer();
       let closed = false;
       let ready = false;
+      let connected = false;
       let timer = -1;
       const cleanup = (): void => {
         if (closed) return;
         closed = true;
         clearTimeout(timer);
-        closeRpcSocket(client);
+        if (connected) releaseRpcSocket(client);
+        else closeRpcSocket(client);
       };
       const fail = (error: Error): void => {
         if (closed) return;
@@ -450,8 +448,8 @@ export class SocketProxyService implements IClashManager {
           }
         } catch (e) { fail(e as Error); }
       });
-      client.on('close', () => fail(new Error('RPC 订阅连接已关闭')));
-      client.on('error', fail);
+      client.on('close', () => { connected = false; fail(new Error('RPC 订阅连接已关闭')); });
+      client.on('error', (e: Error) => { connected = false; fail(e); });
       timer = setTimeout(() => fail(new Error('RPC 订阅确认超时')), 5000);
       const connect = async (): Promise<void> => {
         const path = this.context?.filesDir + '/clash_go.sock';
@@ -459,6 +457,7 @@ export class SocketProxyService implements IClashManager {
         if (closed) return;
         await tryConnect(client, path, 3, 500);
         if (closed) { client.close().catch(() => {}); return; }
+        connected = true;
         await client.send({ data: encodeRpcFrame(JSON.stringify(request)) });
       };
       connect().catch(fail);
@@ -503,10 +502,3 @@ async function tryConnect(
 }
 
 export default new SocketProxyService()
-
-function closeRpcSocket(client: socket.LocalSocket): void {
-  try { client.off('message') } catch (_) {}
-  try { client.off('error') } catch (_) {}
-  try { client.off('close') } catch (_) {}
-  try { client.close().catch(() => {}) } catch (_) {}
-}

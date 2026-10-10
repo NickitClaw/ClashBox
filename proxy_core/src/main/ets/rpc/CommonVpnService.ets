@@ -54,6 +54,7 @@ export class VpnConfig {
 export abstract class CommonVpnService{
   context: common.Context
   vpnConnection : vpnExtension.VpnConnection | undefined
+  onClientReleased: ((clientId: number) => void) | undefined
   constructor(context: common.Context) {
     this.context = context
   }
@@ -61,7 +62,7 @@ export abstract class CommonVpnService{
     await client.send({data: encodeRpcFrame(message), })
   }
   abstract onRemoteMessageRequest(client: socket.LocalSocketConnection, message: socket.LocalSocketMessageInfo): Promise<void>
-  onClientClosed(clientId: number): void {}
+  onClientClosed(clientId: number): void { this.onClientReleased?.(clientId) }
   abstract init()
   async getTunFd(config: VpnConfig): Promise<number> {
     let tunFd = -1
@@ -137,4 +138,3 @@ export function cidrToRoute(cidr: string): RouteInfo | null {
     isDefaultRoute: cidr == "0.0.0.0/0" || cidr == "::/0",
   }
 }
-

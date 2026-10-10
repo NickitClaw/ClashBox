@@ -1,5 +1,6 @@
 import { VpnLifecycleState } from './VpnLifecycleState';
 import { encodeRpcFrame, RpcFrameBuffer } from './RpcFrame';
+import { closeRpcSocket, releaseRpcSocket, isRpcReceipt } from './RpcSocketLifecycle';
 import { vpnExtension, socket } from '@kit.NetworkKit';
 import {
   startTun, stopTun, setFdMap, getVpnOptions, startLog, getProxies, getTraffic,
@@ -82,8 +83,14 @@ export class FlClashVpnService extends CommonVpnService {
   public configPath: string = ""
   protectSocketPath: string = ""
   private frames: Map<number, RpcFrameBuffer> = new Map()
+  private responseTimers: Map<number, number> = new Map()
 
   override async onRemoteMessageRequest(client: socket.LocalSocketConnection, message: socket.LocalSocketMessageInfo): Promise<void> {
+    if (isRpcReceipt(new Uint8Array(message.message))) {
+      this.onClientClosed(client.clientId)
+      client.close().catch(() => {})
+      return
+    }
     try {
       let buffer = this.frames.get(client.clientId)
       if (!buffer) {
@@ -96,18 +103,33 @@ export class FlClashVpnService extends CommonVpnService {
           const request = decodeRpcRequest(frame, 'vpn');
           method = request.method;
           const result = await this.onRemoteMessage(request.method, request.params);
-          await this.sendClient(client, JSON.stringify(rpcSuccess(method, result)));
+          await this.sendRpcResponse(client, JSON.stringify(rpcSuccess(method, result)));
         } catch (e) {
-          await this.sendClient(client, JSON.stringify(rpcFailure(e as Error, method)));
+          await this.sendRpcResponse(client, JSON.stringify(rpcFailure(e as Error, method)));
         }
       }
     } catch (_) {
-      this.frames.delete(client.clientId)
+      this.onClientClosed(client.clientId)
       client.close().catch(() => {})
     }
   }
   override onClientClosed(clientId: number): void {
     this.frames.delete(clientId)
+    const timer = this.responseTimers.get(clientId)
+    if (timer !== undefined) clearTimeout(timer)
+    this.responseTimers.delete(clientId)
+    super.onClientClosed(clientId)
+  }
+
+  private async sendRpcResponse(client: socket.LocalSocketConnection, response: string): Promise<void> {
+    if (!this.frames.has(client.clientId)) return
+    const previous = this.responseTimers.get(client.clientId)
+    if (previous !== undefined) clearTimeout(previous)
+    this.responseTimers.set(client.clientId, setTimeout(() => {
+      this.onClientClosed(client.clientId)
+      client.close().catch(() => {})
+    }, 5000))
+    await this.sendClient(client, response)
   }
 
   /** 防止多次调用 stopVpn 导致 stopTun 重复执行 */
@@ -408,6 +430,7 @@ export class FlClashVpnService extends CommonVpnService {
     return new Promise<boolean>((resolve) => {
       const frames = new RpcFrameBuffer()
       let finished = false
+      let connected = false
       const client: socket.LocalSocket = socket.constructLocalSocketInstance()
       let timeoutId = -1
       const done = (ok: boolean): void => {
@@ -416,13 +439,8 @@ export class FlClashVpnService extends CommonVpnService {
         }
         finished = true
         clearTimeout(timeoutId)
-        try {
-          client.off('message')
-          client.off('error')
-          client.off('close')
-          client.close()
-        } catch (_) {
-        }
+        if (connected) releaseRpcSocket(client)
+        else closeRpcSocket(client)
         resolve(ok)
       }
       timeoutId = setTimeout(() => {
@@ -437,13 +455,17 @@ export class FlClashVpnService extends CommonVpnService {
         } catch (_) { done(false) }
       })
       client.on('error', () => {
+        connected = false
         done(false)
       })
       client.on('close', () => {
+        connected = false
         done(false)
       })
       client.connect({ address: { address: socketPath }, timeout: 1000 })
         .then(() => {
+          if (finished) { closeRpcSocket(client); return }
+          connected = true
           return client.send({ data: encodeRpcFrame(JSON.stringify(createRpcRequest(requireTun ? ClashRpcType.GetVpnRunTime : ClashRpcType.GetVersion, []))) })
         })
         .catch(() => {

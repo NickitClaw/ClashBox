@@ -24,6 +24,9 @@ func (s *Session) Done() <-chan struct{} { return s.done }
 func (s *Session) Finish()               { s.once.Do(func() { close(s.done) }) }
 
 // Invoke only after reading the complete request; one request per connection.
+// The peer sends 0x06 after consuming the final response (or to cancel a stream),
+// then waits for server EOF before releasing its LocalSocket descriptor. EOF
+// from older peers is still accepted; any extra request data ends the session.
 func (s *Session) WatchDisconnect() {
 	go func() { var b [1]byte; _, _ = s.conn.Read(b[:]); s.Finish() }()
 }
@@ -45,9 +48,8 @@ func (s *Session) Send(payload []byte, final bool) error {
 		s.Finish()
 	} else if final {
 		s.final = true
-		// The ArkTS peer closes after decoding the complete response. Avoid
-		// racing queued message callbacks with a server-initiated close event.
-		// WatchDisconnect bounds the lifetime of peers that never close.
+		// Wait for the receipt before closing: a successful write does not mean
+		// ArkTS dispatched its message callback. Bound peers that never reply.
 		_ = s.conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	}
 	return err

@@ -17,6 +17,15 @@ export class SocketStubService {
   constructor(context: common.Context, observer?: (state: VpnSnapshot) => void, allowVpn: boolean = true) {
     this.clientPool = new Map()
     this.vpnService = new FlClashVpnService(context, observer, allowVpn)
+    // Explicit server close need not emit 'close'. Release the pool reference
+    // for both receipt-driven closes and peer disconnects.
+    this.vpnService.onClientReleased = (clientId: number) => {
+      const client = this.clientPool.get(clientId)
+      if (!client) return
+      client.off('message')
+      client.off('close')
+      this.clientPool.delete(clientId)
+    }
     this.initialized = this.vpnService.init()
   }
 
@@ -46,9 +55,6 @@ export class SocketStubService {
           })
           client.on('close', () => {
             this.vpnService.onClientClosed(client.clientId)
-            client.off("message")
-            client.off("close")
-            this.clientPool.delete(client.clientId);
           });
       })
       await this.lockVpn(requestId)
@@ -82,8 +88,7 @@ export class SocketStubService {
   }
   async destroy(){
     this.clientPool.forEach((client) => {
-      client.off("message")
-      client.off("close")
+      this.vpnService.onClientClosed(client.clientId)
       client.close()
     })
     this.clientPool.clear()
