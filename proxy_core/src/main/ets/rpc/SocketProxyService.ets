@@ -1,6 +1,6 @@
 import { encodeRpcFrame, RpcFrameBuffer } from './RpcFrame';
 import { closeRpcSocket, releaseRpcSocket } from './RpcSocketLifecycle';
-import { generateUUID, writeProfileText } from '../profile/ProfileStorage';
+import { generateUUID, writeProfileText, readProfileText } from '../profile/ProfileStorage';
 import { socket, vpnExtension } from '@kit.NetworkKit';
 import { createRpcRequest, decodeRpcResponse, rpcMethod, assertRpcCompatibility, RpcError } from './RpcContract';
 import { RpcCapabilities, RpcErrorCode, VpnSnapshot } from './RpcContract.generated';
@@ -111,6 +111,20 @@ export class SocketProxyService implements IClashManager {
       return await this.sendMessageRequest(ClashRpcType.load, [JSON.stringify(request)]) as string;
     } finally {
       if (path !== undefined) { try { await fileIo.unlink(path); } catch (_) {} }
+    }
+  }
+  async getConfigSnapshot(): Promise<UpdateConfigParams | undefined> {
+    if (!this.context) throw new Error('配置存储尚未初始化');
+    const path = `${this.context.tempDir}/snapshot-${generateUUID()}.json`;
+    try {
+      if (!await this.sendMessageRequest(ClashRpcType.getConfigSnapshot, [path])) return undefined;
+      const snapshot = JSON.parse(await readProfileText(path)) as UpdateConfigParams;
+      if (!snapshot['profile-id'] || typeof snapshot.source !== 'string' || !snapshot.config || !snapshot.params) {
+        throw new Error('内核运行配置快照无效');
+      }
+      return snapshot;
+    } finally {
+      try { await fileIo.unlink(path); } catch (_) {}
     }
   }
   async vailConfig(filepath: string){
@@ -258,14 +272,14 @@ export class SocketProxyService implements IClashManager {
     return result as string
   }
   async updateProvider(provider: Provider): Promise<string> {
-    return  (await this.sendMessageRequest(ClashRpcType.updateProvider,[provider.name])) as string
+    return  (await this.sendMessageRequest(ClashRpcType.updateProvider,[provider.name, provider.path ?? ''])) as string
   }
   async upLoadProvider(provider: Provider, uri: string): Promise<string> {
     if (!this.context) throw new Error('Provider 上传服务尚未初始化');
     const temp = `${this.context.filesDir}/provider-${generateUUID()}.tmp`;
     try {
       await fs.copy(uri, fileUri.getUriFromPath(temp));
-      return await this.sendMessageRequest(ClashRpcType.uploadProvider, [provider.name, temp]) as string;
+      return await this.sendMessageRequest(ClashRpcType.uploadProvider, [provider.name, temp, provider.path ?? '']) as string;
     } finally {
       try { await fs.unlink(temp); } catch (_) {}
     }

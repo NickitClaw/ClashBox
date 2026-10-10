@@ -19,15 +19,38 @@ export class ConfigActivationService {
   private queue: Promise<void> = Promise.resolve();
   private generation: number = 0;
   private confirmed?: ConfigSnapshot;
+  private resetting: boolean = false;
   private host: ConfigActivationHost;
   constructor(host: ConfigActivationHost) { this.host = host; }
 
+  /** Attach to the actual core snapshot without applying it or closing connections. */
+  attach(read: () => Promise<ConfigSnapshot | undefined>): Promise<boolean> {
+    if (this.resetting) return Promise.reject(new Error('正在清理配置，请稍后重试'));
+    const generation = this.generation;
+    return this.enqueue(async () => {
+      const snapshot = await read();
+      if (generation !== this.generation || !snapshot) return false;
+      this.host.commit(snapshot);
+      this.confirmed = snapshot;
+      return true;
+    });
+  }
+
+  exclusive(work: () => Promise<void>): Promise<boolean> {
+    if (this.resetting) return Promise.reject(new Error('正在清理配置，请稍后重试'));
+    return this.enqueue(async () => { await work(); return true; });
+  }
+
+  forget(): void { this.confirmed = undefined; }
+
   activate(id: string, update: boolean = false): Promise<boolean> {
+    if (this.resetting) return Promise.reject(new Error('正在清理配置，请稍后重试'));
     const generation = ++this.generation;
     return this.enqueue(() => this.run(id, update, false, generation));
   }
 
   reload(patch: boolean, expectedId?: string): Promise<boolean> {
+    if (this.resetting) return Promise.reject(new Error('正在清理配置，请稍后重试'));
     const generation = this.generation;
     // Resolve selection inside the queue, after any pending successful switch.
     return this.enqueue(() => {
@@ -40,6 +63,7 @@ export class ConfigActivationService {
   /** Node changes share the activation queue; rollback always keeps the last acknowledged selection. */
   selectProxy(id: string, group: string, name: string, apply: () => Promise<void>,
     persist?: () => Promise<void>): Promise<boolean> {
+    if (this.resetting) return Promise.reject(new Error('正在清理配置，请稍后重试'));
     return this.enqueue(async () => {
       if (this.host.selectedId() !== id) return false;
       await apply();
@@ -73,6 +97,18 @@ export class ConfigActivationService {
     return pending;
   }
 
+  reset(erase: () => Promise<void>): Promise<boolean> {
+    if (this.resetting) return Promise.reject(new Error('正在清理配置，请稍后重试'));
+    this.resetting = true;
+    ++this.generation;
+    return this.enqueue(async () => {
+      await this.host.stop();
+      this.confirmed = undefined;
+      await erase();
+      return true;
+    }).finally(() => { this.resetting = false; });
+  }
+
   private async restore(previous: ConfigSnapshot | undefined): Promise<void> {
     if (previous) {
       // A patch cannot restore the proxy/rule set replaced by a full switch.
@@ -97,6 +133,7 @@ export class ConfigActivationService {
       // A settings patch keeps the currently running proxy/rule source, even if the
       // subscription file was updated in the background since its activation.
       snapshot.payload.source = previous.payload.source;
+      snapshot.payload.params['selected-map'] = previous.payload.params['selected-map'];
     } else {
       snapshot.payload.params['is-patch'] = false;
     }

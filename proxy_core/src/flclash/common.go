@@ -18,6 +18,7 @@ import (
 	"github.com/metacubex/mihomo/adapter/provider"
 	"github.com/metacubex/mihomo/common/batch"
 	"github.com/metacubex/mihomo/component/dialer"
+	"github.com/metacubex/mihomo/component/geodata"
 	"github.com/metacubex/mihomo/component/resolver"
 	"github.com/metacubex/mihomo/config"
 	"github.com/metacubex/mihomo/constant"
@@ -70,17 +71,7 @@ func getProfileProvidersPath(id string) string {
 	return filepath.Join(constant.Path.HomeDir(), "providers", id)
 }
 
-func getRawConfigWithId(id string, source *string) (*config.RawConfig, error) {
-	var bytes []byte
-	var err error
-	if source != nil {
-		bytes, err = readFile(*source)
-	} else {
-		bytes, err = readFile(getProfilePath(id))
-	}
-	if err != nil {
-		return nil, fmt.Errorf("read profile: %w", err)
-	}
+func parseProfileConfig(id string, bytes []byte) (*config.RawConfig, error) {
 	prof, err := config.UnmarshalRawConfig(bytes)
 	if err != nil {
 		return nil, fmt.Errorf("parse profile: %w", err)
@@ -159,8 +150,8 @@ func sideUpdateExternalProvider(p cp.Provider, bytes []byte) error {
 	return configops.SideUpdate(p, bytes)
 }
 
-func decorationConfig(profileId string, source *string, cfg config.RawConfig) (*config.RawConfig, error) {
-	prof, err := getRawConfigWithId(profileId, source)
+func decorationConfig(profileId string, source string, cfg config.RawConfig) (*config.RawConfig, error) {
+	prof, err := parseProfileConfig(profileId, []byte(source))
 	if err != nil {
 		return nil, err
 	}
@@ -268,6 +259,10 @@ func patchConfig() {
 	tunnel.SetMode(general.Mode)
 	log.SetLevel(general.LogLevel)
 	resolver.DisableIPv6 = !general.IPv6
+	geodata.SetGeoIpUrl(general.GeoXUrl.GeoIp)
+	geodata.SetGeoSiteUrl(general.GeoXUrl.GeoSite)
+	geodata.SetMmdbUrl(general.GeoXUrl.Mmdb)
+	geodata.SetASNUrl(general.GeoXUrl.ASN)
 
 	route.ReCreateServer(&route.Config{
 		Addr:        controller.ExternalController,

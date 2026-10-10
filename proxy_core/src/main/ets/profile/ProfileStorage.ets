@@ -144,6 +144,22 @@ export class ProfileTransaction {
     if (await fs.access(this.path)) await fs.unlink(this.path);
     await this.clearBackup();
   }
+
+  /** Restore previously read bytes, including a script backup without a config file. */
+  async restore(content: string | undefined, backup: string | undefined): Promise<void> {
+    if (content !== undefined) {
+      await this.commit(content, async () => '', { clearBackup: true, backup: backup });
+      return;
+    }
+    await this.delete();
+    if (backup !== undefined) {
+      const temp = `${this.backupPath}.${generateUUID()}.tmp`;
+      try {
+        await writeProfileText(temp, backup);
+        await fs.rename(temp, this.backupPath);
+      } finally { try { await fs.unlink(temp); } catch (_) {} }
+    }
+  }
 }
 
 export class ProfileStorage {

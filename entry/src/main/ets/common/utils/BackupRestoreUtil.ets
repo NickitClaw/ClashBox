@@ -57,21 +57,23 @@ class BackupRestoreUtil {
         config = await Xb_FileUtils.importDataByFile<BackupConfig>(uri);
       }
       if (!config || !Array.isArray(config.configList)) throw new Error('备份配置解析失败');
+      if (!config.appConfig || !config.uiConfig || !config.clashConfig) throw new Error('备份缺少应用设置');
+      const restoredClash = migrateSnifferConfig(config.clashConfig);
+      config.appConfig.clashCore = resolveCoreMode(config.appConfig.clashCore, BuildProfile.DEBUG);
+      if (getJsonArrayType(config.uiConfig.isShowHomeCard) === 'boolean') {
+        config.uiConfig.isShowHomeCard = filterStringsByBooleans(config.uiConfig.isShowHomeCard, 'string') as string;
+      }
       // Do not publish selection or report success until every profile has been restored.
       await ClashViewModel.addOrUpdateProfiles(config.configList);
       const app = config.appConfig;
-      app.clashCore = resolveCoreMode(app.clashCore, BuildProfile.DEBUG);
       if (app.currentProfileId && !await ClashViewModel.getProfile(app.currentProfileId)) {
         app.currentProfileId = '';
         app.currentProfileName = undefined;
         app.currentProxyName = undefined;
       }
-      if (getJsonArrayType(config.uiConfig.isShowHomeCard) === 'boolean') {
-        config.uiConfig.isShowHomeCard = filterStringsByBooleans(config.uiConfig.isShowHomeCard, 'string') as string;
-      }
       await Xb_PreferenceUtil.put('config_sort', config.configSort ?? '[]');
       AppStorage.set('uiConfig', config.uiConfig);
-      AppStorage.set('clashConfig', migrateSnifferConfig(config.clashConfig));
+      AppStorage.set('clashConfig', restoredClash);
       AppStorage.set('appConfig', app);
       Xb_ToastUtil.showToast({ message: $r('app.string.import_success') });
       setTimeout(() => { Xb_ToastUtil.restartApp(); }, 2000);

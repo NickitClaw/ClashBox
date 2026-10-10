@@ -383,6 +383,48 @@
       "wire": "{\"protocolVersion\": 1, \"method\": 12, \"params\": [\"{\\\"profile-id\\\": \\\"A/config\\\", \\\"config\\\": {}, \\\"params\\\": {}, \\\"source-path\\\": \\\"/tmp/activation.yaml\\\"}\"]}",
       "endpoint": "go",
       "errorCode": ""
+    },
+    {
+      "name": "configuration snapshot ['/tmp/snapshot.json']",
+      "wire": "{\"protocolVersion\": 1, \"method\": 35, \"params\": [\"/tmp/snapshot.json\"]}",
+      "endpoint": "go",
+      "errorCode": ""
+    },
+    {
+      "name": "configuration snapshot []",
+      "wire": "{\"protocolVersion\": 1, \"method\": 35, \"params\": []}",
+      "endpoint": "go",
+      "errorCode": "INVALID_PARAMS"
+    },
+    {
+      "name": "configuration snapshot [5]",
+      "wire": "{\"protocolVersion\": 1, \"method\": 35, \"params\": [5]}",
+      "endpoint": "go",
+      "errorCode": "INVALID_PARAMS"
+    },
+    {
+      "name": "provider ownership 7 ",
+      "wire": "{\"protocolVersion\": 1, \"method\": 7, \"params\": [\"nodes\", \"/providers/A/nodes\"]}",
+      "endpoint": "go",
+      "errorCode": ""
+    },
+    {
+      "name": "provider ownership 7 INVALID_PARAMS",
+      "wire": "{\"protocolVersion\": 1, \"method\": 7, \"params\": [\"nodes\", false]}",
+      "endpoint": "go",
+      "errorCode": "INVALID_PARAMS"
+    },
+    {
+      "name": "provider ownership 8 ",
+      "wire": "{\"protocolVersion\": 1, \"method\": 8, \"params\": [\"nodes\", \"/tmp/upload\", \"/providers/A/nodes\"]}",
+      "endpoint": "go",
+      "errorCode": ""
+    },
+    {
+      "name": "provider ownership 8 INVALID_PARAMS",
+      "wire": "{\"protocolVersion\": 1, \"method\": 8, \"params\": [\"nodes\", \"/tmp/upload\", false]}",
+      "endpoint": "go",
+      "errorCode": "INVALID_PARAMS"
     }
   ],
   "results": [
@@ -782,6 +824,27 @@
       "name": "state snapshot 56",
       "method": 1,
       "result": "{\"phase\": \"stopped\"}",
+      "valid": false,
+      "streamReady": false
+    },
+    {
+      "name": "configuration snapshot True",
+      "method": 35,
+      "result": true,
+      "valid": true,
+      "streamReady": false
+    },
+    {
+      "name": "configuration snapshot False",
+      "method": 35,
+      "result": false,
+      "valid": true,
+      "streamReady": false
+    },
+    {
+      "name": "configuration snapshot true",
+      "method": 35,
+      "result": "true",
       "valid": false,
       "streamReady": false
     }

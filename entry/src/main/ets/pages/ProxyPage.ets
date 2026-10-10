@@ -259,7 +259,8 @@ struct ProxyPage {
                       this.currentProxyIndex = targetIndex
                       if (this.currentProfile) {
                         this.currentProfile.currentGroupName = this.proxyGroups.getData(this.currentProxyIndex).name
-                        ClashViewModel.updateProfile(this.currentProfile)
+                        ClashViewModel.updateCurrentGroup(this.currentProfile.id, this.currentProfile.currentGroupName)
+                          .catch((e: Error) => { console.warn(`保存代理分组失败：${e.message}`); })
                       }
                     })
                   })

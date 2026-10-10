@@ -169,8 +169,18 @@ export class ProfileRepo {
     } finally {
       old.close();
     }
-    const jsonObject = details.getSelectedMap()
-    const input: ValuesBucket = {
+    const input = this.values(details);
+    if (exists) {
+      await this.store!.update(input, predicates)
+      return 1
+    } else {
+      await this.store!.insert("Profiles", input)
+      return 0
+    }
+  }
+
+  private values(details: Profile): ValuesBucket {
+    return {
       id: details.id,
       name: details.name,
       type: details.type,
@@ -181,23 +191,39 @@ export class ProfileRepo {
       lastUpdateDate: details.lastUpdateDate,
       autoUpdateDuration: details.autoUpdateDuration,
       subscriptionInfo: JSON.stringify(details.subscriptionInfo),
-      proxySelected: JSON.stringify(jsonObject),
+      proxySelected: JSON.stringify(details.getSelectedMap()),
       customUA: details.customUA,
       flag: details.flag,
       customRules: JSON.stringify(details.customRules ?? []),
       // 如果未定义则默认存储 'rule'
       overrideMode: details.overrideMode ? details.overrideMode : 'rule'
     }
-    if (exists) {
-      await this.store!.update(input, predicates)
-      return 1
-    } else {
-      await this.store!.insert("Profiles", input)
-      return 0
+  }
+
+  async restoreBatch(profiles: Profile[], replaceFiles: () => Promise<void>): Promise<void> {
+    if (!this.store) throw new Error('配置数据库尚未初始化');
+    const transaction = await this.store.createTransaction({ transactionType: relationalStore.TransactionType.IMMEDIATE });
+    try {
+      for (const profile of profiles) {
+        await transaction.insert('Profiles', this.values(profile), relationalStore.ConflictResolution.ON_CONFLICT_REPLACE);
+      }
+      await replaceFiles();
+      await transaction.commit();
+    } catch (e) {
+      await transaction.rollback();
+      throw e as Error;
     }
   }
 
   // Update only selection, using current metadata rather than a potentially stale page object.
+  async updateCurrentGroup(id: string, name: string): Promise<void> {
+    const predicates = new relationalStore.RdbPredicates('Profiles');
+    predicates.equalTo('id', id);
+    if (await this.store!.update({ currentGroupName: name }, predicates) === 0) {
+      throw new Error('配置不存在或已被删除');
+    }
+  }
+
   async updateProxySelection(id: string, group: string, name: string): Promise<void> {
     const profile = await this.query(id);
     if (!profile) throw new Error('配置不存在或已被删除');

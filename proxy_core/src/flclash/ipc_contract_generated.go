@@ -42,3 +42,4 @@ const HealthCheckAll = rpccontract.HealthCheckAll
 const HealthCheckBatch = rpccontract.HealthCheckBatch
 const GetVersion = rpccontract.GetVersion
 const GetCapabilities = rpccontract.GetCapabilities
+const GetConfigSnapshot = rpccontract.GetConfigSnapshot

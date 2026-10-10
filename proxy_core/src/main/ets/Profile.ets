@@ -66,7 +66,7 @@ export class Profile {
       script: script, fixTlsFingerprint: this.fixTlsFingerprint, yamlOverride: this.yamlOverride };
   }
 
-  async checkAndUpdate(socketProxy: SocketProxyService, customRules: string[] = [], deleteRules: string[] = []): Promise<void> {
+  async checkAndUpdate(socketProxy: SocketProxyService, customRules: string[] = this.customRules, deleteRules: string[] = []): Promise<void> {
     if (!await this.check() && this.url !== '') await this.update(socketProxy, customRules, deleteRules);
   }
 
@@ -81,7 +81,7 @@ export class Profile {
     });
   }
 
-  async update(socketProxy: SocketProxyService, customRules: string[] = [], deleteRules: string[] = []): Promise<boolean> {
+  async update(socketProxy: SocketProxyService, customRules: string[] = this.customRules, deleteRules: string[] = []): Promise<boolean> {
     const options = this.transformOptions(customRules, deleteRules);
     const url = this.url;
     const ua = this.globalUa;

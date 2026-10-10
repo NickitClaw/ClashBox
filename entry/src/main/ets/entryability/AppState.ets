@@ -215,18 +215,18 @@ export class AppState {
   }
   // 清理数据 还原默认值
   static async ResetConfig(context: Context) {
-    ClashViewModel.StopVpn()
-    AppState.ResetClashConfig()
-    AppStorage.set("appConfig", new AppConfig())
-    AppStorage.set("favoriteProfiles", new Map<string, string>([]))
-    AppStorage.set("favoriteProxys", new Map<string, string>([]))
-    AppStorage.set("uiConfig",  new UIConfig())
-    AppStorage.set("appFlowingState", new AppFlowingState())
-    AppStorage.set("proxyGroups", [])
-    await ClashViewModel.profileRepo.ClearAll(context)
-    // 清空配置排序表
-    await Xb_PreferenceUtil.delete('config_sort')
-    EventHub.sendEvent(EventKey.FetchProfile)
+    await ClashViewModel.resetProfiles(async () => {
+      AppState.ResetClashConfig()
+      AppStorage.set("appConfig", new AppConfig())
+      AppStorage.set("favoriteProfiles", new Map<string, string>([]))
+      AppStorage.set("favoriteProxys", new Map<string, string>([]))
+      AppStorage.set("uiConfig",  new UIConfig())
+      AppStorage.set("appFlowingState", new AppFlowingState())
+      AppStorage.set("proxyGroups", [])
+      // 清空配置排序表
+      await Xb_PreferenceUtil.delete('config_sort')
+      EventHub.sendEvent(EventKey.FetchProfile)
+    });
     // TODO 还原其他配置
   }
 

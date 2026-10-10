@@ -2,10 +2,12 @@ package integration_test
 
 import (
 	"core/configops"
+	"encoding/json"
 	"fmt"
 	AP "github.com/metacubex/mihomo/adapter/provider"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -128,4 +130,36 @@ func TestProviderSideUpdateReportsErrorsAndAcceptsRulePointers(t *testing.T) {
 	if rules.Count() != 1 {
 		t.Fatal("bad upload discarded working rules")
 	}
+}
+
+func TestConcurrentRuleRefreshAndRouting(t *testing.T) {
+	C.SetHomeDir(t.TempDir())
+	RP.SetTunnel(T.Tunnel)
+	p := RP.NewRuleSetProvider("rules", P.Domain, P.YamlRule, 0, resource.NewFileVehicle(C.Path.Resolve("rules.yaml")), nil, nil, nil)
+	defer p.(interface{ Close() error }).Close()
+	if err := configops.SideUpdate(p, []byte("payload:\n  - example.invalid\n")); err != nil {
+		t.Fatal(err)
+	}
+	var workers sync.WaitGroup
+	workers.Add(2)
+	go func() {
+		defer workers.Done()
+		for i := 0; i < 2000; i++ {
+			p.Match(&C.Metadata{Host: "example.invalid"}, C.RuleMatchHelper{})
+			p.Count()
+			p.Strategy()
+			if _, err := json.Marshal(p); err != nil {
+				t.Error(err)
+			}
+		}
+	}()
+	go func() {
+		defer workers.Done()
+		for i := 0; i < 100; i++ {
+			if err := configops.SideUpdate(p, []byte(fmt.Sprintf("payload:\n  - %d.example.invalid\n", i))); err != nil {
+				t.Error(err)
+			}
+		}
+	}()
+	workers.Wait()
 }

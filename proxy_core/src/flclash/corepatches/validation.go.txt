@@ -25,7 +25,7 @@ func CloseParsedConfig(parsed *Config) {
 	for _, p := range parsed.Proxies {
 		_ = p.Close()
 	}
-	for _, listener := range parsed.Listeners {
-		_ = listener.Close()
-	}
+	// Inbound constructors only retain options; sockets/services are acquired by
+	// Listen during activation. Close assumes Listen ran for several protocols.
+	// Never close these unstarted listeners, including on partial parse failure.
 }

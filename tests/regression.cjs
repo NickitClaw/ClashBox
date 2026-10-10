@@ -243,7 +243,7 @@ function rpcSocketFixture({ autoClose = true } = {}) {
   const { SocketProxyService } = load('proxy_core/src/main/ets/rpc/SocketProxyService.ets', {
     '@kit.NetworkKit': { socket: { constructLocalSocketInstance: () => new Socket() } },
     '@kit.ArkTS': { JSON, util }, '@kit.CoreFileKit': { fileIo: { access: async () => true, unlink: async path => snapshots.delete(path) } },
-    '../profile/ProfileStorage': { generateUUID: () => 'test', writeProfileText: async (path, text) => snapshots.set(path, text) },
+    '../profile/ProfileStorage': { generateUUID: () => 'test', writeProfileText: async (path, text) => snapshots.set(path, text), readProfileText: async path => snapshots.get(path) },
     './RpcSocketLifecycle': load('proxy_core/src/main/ets/rpc/RpcSocketLifecycle.ets', {}, time),
     './RpcFrame': rpcFrames, './IClashManager': rpcGenerated, './RpcContract': rpcContract, './RpcContract.generated': rpcGenerated
   }, time);
@@ -566,7 +566,7 @@ function profileFixture({ passthrough = false } = {}) {
     },
     close: async id => { assert.ok(handles.delete(id)); }, fsync: async () => {},
     rename: async (src, dst) => {
-      if (faults.rename && dst.endsWith('/config.yaml')) throw new Error('injected rename failure');
+      if ((faults.rename && dst.endsWith('/config.yaml')) || faults.renamePath === dst) throw new Error('injected rename failure');
       assert.ok(data.has(src)); data.set(dst, data.get(src)); data.delete(src);
     },
     unlink: async p => { if (!data.delete(p)) throw new Error('ENOENT'); },
@@ -924,6 +924,7 @@ function viewModelFixture(options = {}) {
     'proxy_core/src/main/ets/rpc/VpnLifecycleState': lifecycleModule,
     'proxy_core/src/main/ets/ProfileRepo': { ProfileRepo: class {} },
     'proxy_core/src/main/ets/profile/ProfileBackup': options.profileBackup ?? {},
+    'proxy_core/src/main/ets/profile/ProfileRestore': options.profileRestore ?? {},
     'proxy_core/src/main/ets/profile/ProfileStorage': { ProfileStorage: class {
       async transaction(action) { return action({ read: async () => options.profileSource }); }
     } },
@@ -934,7 +935,7 @@ function viewModelFixture(options = {}) {
       async destroy() { calls.push('destroyLocalCore'); }
     } },
     'BuildProfile': { default: { DEBUG: options.debug !== false } },
-    './AppState': { ClashCore: { mihomo: 0, ClashMeta: 1 } },
+    './AppState': { ClashCore: { mihomo: 0, ClashMeta: 1 }, AppConfig: class {} },
     './EntryAbility': { sleep: async () => {} },
     '@kit.NetworkKit': { vpnExtension: {
       startVpnExtensionAbility: async want => { calls.push(['startExtension', want]); return options.startExtension?.(want); },
@@ -1761,10 +1762,11 @@ test('Backup round-trip keeps profile IDs, selections and persisted metadata on 
   });
   const wire = JSON.parse(JSON.stringify(helpers.backupProfile(original)));
   assert.equal(wire.proxySelected.PROXY, 'N2'); assert.equal(wire.context, undefined);
-  const vm = viewModelFixture({ profileBackup: helpers }), stored = [];
+  const restorer = load('proxy_core/src/main/ets/profile/ProfileRestore.ets', { './ProfileStorage': f.storage });
+  const vm = viewModelFixture({ profileBackup: helpers, profileRestore: restorer }), stored = [];
   vm.service.context = original.context;
   vm.service.socketProxy.vailConfig = async () => '';
-  vm.service.profileRepo.addOrUpdate = async p => stored.push(p);
+  vm.service.profileRepo.restoreBatch = async (profiles, replace) => { await replace(); stored.push(...profiles); };
   f.network.response.result = "proxies: [{name: N2, type: trojan, server: example.invalid, port: 443, password: secret}]\nrules: ['MATCH,DIRECT']";
   await vm.service.addOrUpdateProfiles([wire]);
   assert.equal(stored.length, 1); const restored = stored[0];
@@ -1781,9 +1783,11 @@ test('Failed backup restoration does not publish dangling selection or report su
   const calls = [], time = clock();
   const { default: backup } = load('entry/src/main/ets/common/utils/BackupRestoreUtil.ets', {
     '../../entryability/ClashViewModel': { default: { addOrUpdateProfiles: async () => { throw new Error('download failed'); } } },
+    'BuildProfile': { default: { DEBUG: false } }, '../services/CoreMode': coreMode,
+    'proxy_core': { ...clashConfigModel, ...snifferMigration }, '../entity/utils': { getJsonArrayType: () => 'string' },
     'xb_components': { Xb_ToastUtil: { showToast: m => calls.push(m.message) } }
   }, { ...time, AppStorage: { set: () => assert.fail('must retain current selection') } });
-  assert.equal(await backup.restore({ configList: [], appConfig: { currentProfileId: 'missing' } }), false);
+  assert.equal(await backup.restore({ configList: [], appConfig: { currentProfileId: 'missing' }, uiConfig: {}, clashConfig: legacyClashConfig() }), false);
   assert.ok(calls[0].includes('download failed')); assert.equal(time.timeouts.size, 0);
 });
 
@@ -1899,4 +1903,184 @@ test('Profile repository saves backup rules and updates node selection without c
   await repo.updateProxySelection('A', 'PROXY', 'N2');
   assert.deepEqual(Object.keys(writes[1]), ['proxySelected']);
   assert.deepEqual(JSON.parse(writes[1].proxySelected), { PROXY: 'N2', OTHER: 'keep' });
+});
+
+test('Cold UI attaches actual running bytes without applying and rolls back to them on later failure', async () => {
+  const storage = new Map([['appConfig', { currentProfileId: 'A' }]]);
+  const f = viewModelFixture({ storage });
+  const payload = { 'profile-id': 'A', source: 'runtime bytes', config: {}, params: { 'selected-map': { PROXY: 'N2' } } };
+  f.service.socketProxy.queryVpnState = async () => ({ running: true });
+  f.service.socketProxy.getConfigSnapshot = async () => payload;
+  f.service.getProfile = async () => ({ name: 'A' });
+  f.service.socketProxy.loadConfig = async p => { f.calls.push(p.source); return p['profile-id'] === 'B' ? 'bad B' : ''; };
+  await f.service.initProfile();
+  assert.deepEqual(f.calls.filter(x => typeof x === 'string'), []);
+  f.service.prepareActivation = async id => ({ id, name: id, payload: { 'profile-id': id, source: 'changed on disk', params: {} } });
+  await f.service.activation.reload(true);
+  assert.equal(f.calls.at(-2), 'runtime bytes');
+  await assert.rejects(f.service.activateProfile('B'), /bad B/);
+  assert.ok(f.calls.includes('runtime bytes')); assert.equal(storage.get('appConfig').currentProfileId, 'A');
+  assert.deepEqual(f.service.activation.confirmed.payload.params['selected-map'], { PROXY: 'N2' });
+});
+
+test('Stopped and fresh cores load the selected file; snapshot failures never trigger a destructive fallback', async () => {
+  const f = viewModelFixture({ appConfig: { currentProfileId: 'A' } });
+  f.service.socketProxy.getConfigSnapshot = async () => assert.fail('stopped core must load from disk');
+  await f.service.initProfile(); assert.ok(f.calls.includes('loadConfig'));
+  f.calls.length = 0;
+  f.service.socketProxy.queryVpnState = async () => ({ running: true });
+  f.service.socketProxy.getConfigSnapshot = async () => { throw new Error('snapshot failed'); };
+  await assert.rejects(f.service.initProfile(), /snapshot failed/); assert.equal(f.calls.includes('loadConfig'), false);
+});
+
+test('Runtime snapshot transfer supports large sources and removes temporary files on every outcome', async () => {
+  const f = rpcSocketFixture();
+  const payload = { 'profile-id': 'A', source: 'x'.repeat(rpcFrames.MAX_RPC_FRAME_BYTES + 1), config: {}, params: {} };
+  f.service.sendMessageRequest = async (method, [path]) => {
+    assert.equal(method, rpcGenerated.ClashRpcType.getConfigSnapshot); f.snapshots.set(path, JSON.stringify(payload)); return true;
+  };
+  assert.equal((await f.service.getConfigSnapshot()).source.length, payload.source.length);
+  assert.equal(f.snapshots.size, 0);
+  f.service.sendMessageRequest = async () => false;
+  assert.equal(await f.service.getConfigSnapshot(), undefined);
+  f.service.sendMessageRequest = async (_, [path]) => { f.snapshots.set(path, '{'); return true; };
+  await assert.rejects(f.service.getConfigSnapshot()); assert.equal(f.snapshots.size, 0);
+});
+
+test('Restore stages all inputs and rolls files, script backups and new IDs back after commit failure', async () => {
+  for (const failAt of ['prepare', 'file', 'database', 'success']) {
+    const f = profileFixture({ passthrough: true });
+    const { restoreProfilesAtomically } = load('proxy_core/src/main/ets/profile/ProfileRestore.ets', { './ProfileStorage': f.storage });
+    const profiles = [f.create('A'), f.create('B')];
+    f.files.set(f.configPath('A'), 'original A');
+    f.files.set('/profiles/A/config_script_backup.yaml', 'original script baseline');
+    f.files.set('/profiles/B/config_script_backup.yaml', 'orphan script baseline');
+    let persisted = false;
+    const work = restoreProfilesAtomically(profiles[0].context, profiles, async p => {
+      if (p === profiles[1] && failAt === 'prepare') throw new Error('B invalid');
+      await p.save('restored ' + (p === profiles[0] ? 'A' : 'B'), async () => '');
+      assert.equal(f.files.get(f.configPath('A')), 'original A');
+    }, async (rows, replace) => {
+      assert.deepEqual(rows.map(p => p.id), ['A', 'B']);
+      if (failAt === 'file') f.faults.renamePath = f.configPath('B');
+      await replace();
+      if (failAt === 'database') throw new Error('DB commit failed');
+      persisted = true;
+    });
+    if (failAt === 'success') {
+      await work; assert.equal(persisted, true); assert.equal(f.files.get(f.configPath('A')), 'restored A');
+      assert.equal(f.files.has('/profiles/A/config_script_backup.yaml'), false);
+    } else {
+      await assert.rejects(work, /B invalid|DB commit failed|rename failure/);
+      assert.equal(persisted, false); assert.equal(f.files.get(f.configPath('A')), 'original A');
+      assert.equal(f.files.get('/profiles/A/config_script_backup.yaml'), 'original script baseline');
+      assert.equal(f.files.has(f.configPath('B')), false);
+      assert.equal(f.files.get('/profiles/B/config_script_backup.yaml'), 'orphan script baseline');
+    }
+    assert.deepEqual(profiles.map(p => p.id), ['A', 'B']);
+    assert.equal([...f.files.keys()].some(p => p.includes('/restore_') && p.endsWith('config.yaml')), false);
+    f.clean();
+  }
+});
+
+test('Restore database transaction rolls back metadata on file failure and commits only after files', async () => {
+  const { ProfileRepo } = load('proxy_core/src/main/ets/ProfileRepo.ets', {
+    '@kit.ArkData': { relationalStore: { TransactionType: { IMMEDIATE: 1 }, ConflictResolution: { ON_CONFLICT_REPLACE: 5 } } },
+    '@kit.ArkTS': { JSON }
+  });
+  for (const fails of [false, true]) {
+    const repo = new ProfileRepo(), calls = [];
+    repo.store = { createTransaction: async () => ({ insert: async () => calls.push('row'),
+      commit: async () => calls.push('commit'), rollback: async () => calls.push('rollback') }) };
+    const work = repo.restoreBatch([{ id: 'A', getSelectedMap: () => ({}) }], async () => {
+      calls.push('files'); if (fails) throw new Error('file failure');
+    });
+    if (fails) await assert.rejects(work, /file failure/); else await work;
+    assert.deepEqual(calls, ['row', 'files', fails ? 'rollback' : 'commit']);
+  }
+});
+
+test('Ordinary subscription refresh and missing-file recovery retain persisted custom rules', async () => {
+  const f = profileFixture(), p = f.create('A'); p.url = 'https://example.invalid/sub';
+  p.customRules = ['DOMAIN,private.invalid,REJECT'];
+  const socket = { downloadConfig: async (_, __, path) => { f.files.set(path, "rules: ['MATCH,DIRECT']"); return '{}'; }, vailConfig: async () => '' };
+  await p.update(socket);
+  assert.ok(yaml.parse(f.files.get(f.configPath('A'))).rules.includes(p.customRules[0]));
+  f.files.delete(f.configPath('A')); await p.checkAndUpdate(socket);
+  assert.ok(yaml.parse(f.files.get(f.configPath('A'))).rules.includes(p.customRules[0]));
+  await p.update(socket, []); assert.ok(!yaml.parse(f.files.get(f.configPath('A'))).rules.includes(p.customRules[0])); f.clean();
+});
+
+test('Group persistence changes only the group and rejects deleted or stale profile IDs', async () => {
+  const { ProfileRepo } = load('proxy_core/src/main/ets/ProfileRepo.ets', {
+    '@kit.ArkData': { relationalStore: { RdbPredicates: class { equalTo() {} } } }, '@kit.ArkTS': { JSON }
+  });
+  const repo = new ProfileRepo(); let count = 1; const row = { lastUpdateDate: 9999, subscriptionInfo: 'new', proxySelected: 'N2' };
+  repo.store = { update: async values => { assert.deepEqual(Object.keys(values), ['currentGroupName']); Object.assign(row, values); return count; } };
+  await repo.updateCurrentGroup('A', 'G'); assert.equal(row.lastUpdateDate, 9999); assert.equal(row.proxySelected, 'N2');
+  count = 0; await assert.rejects(repo.updateCurrentGroup('deleted', 'G'), /已被删除/);
+  const vm = viewModelFixture({ appConfig: { currentProfileId: 'B' } });
+  vm.service.profileRepo.updateCurrentGroup = async () => assert.fail('stale page must not write');
+  await vm.service.updateCurrentGroup('A', 'G');
+});
+
+test('Reset cancels pending activation, waits for stop acknowledgement and clears rollback state', async () => {
+  const f = activationFixture(); await f.service.activate('A');
+  const gate = deferred(), entered = deferred(), prepare = f.host.prepare;
+  f.host.prepare = async (...args) => { entered.resolve(); await gate.promise; return prepare(...args); };
+  const switching = f.service.activate('B'); await entered.promise;
+  const stopping = deferred(); f.host.stop = async () => { await stopping.promise; };
+  let erased = false;
+  const reset = f.service.reset(async () => { erased = true; f.state.selected = ''; });
+  await assert.rejects(f.service.activate('C'), /清理/); gate.resolve();
+  assert.equal(await switching, false); await flush(); assert.equal(erased, false);
+  stopping.resolve(); await reset;
+  assert.equal(erased, true); assert.equal(f.state.selected, ''); assert.equal(f.service.confirmed, undefined);
+  assert.ok(!f.state.applied.includes('B'));
+  f.host.stop = async () => { throw new Error('stop failed'); };
+  await assert.rejects(f.service.reset(async () => assert.fail('must not erase before stopped')), /stop failed/);
+});
+
+test('ViewModel reset serializes erasure after in-flight apply and never republishes deleted selection', async () => {
+  const storage = new Map([['appConfig', { currentProfileId: 'A' }]]), f = viewModelFixture({ storage });
+  const gate = deferred(), entered = deferred();
+  f.service.prepareActivation = async id => ({ id, name: id, payload: { source: id, params: {} } });
+  f.service.socketProxy.loadConfig = async () => { entered.resolve(); await gate.promise; return ''; };
+  let erased = false; f.service.profileRepo.ClearAll = async () => { erased = true; };
+  const activation = f.service.activateProfile('B'); await entered.promise;
+  const reset = f.service.resetProfiles(async () => storage.set('appConfig', {}));
+  await flush(); assert.equal(erased, false); gate.resolve(); await activation; await reset;
+  assert.equal(erased, true); assert.equal(storage.get('appConfig').currentProfileId, undefined);
+  assert.equal(f.service.activation.confirmed, undefined);
+});
+
+test('Home refresh awaits activation, coalesces clicks and handles errors without an unhandled rejection', async () => {
+  const file = 'entry/src/main/ets/components/Home/CurrentConfiguration.ets';
+  const text = fs.readFileSync(path.join(root, file), 'utf8');
+  const start = text.indexOf('  private async refreshConfiguration()');
+  const method = text.slice(start, text.indexOf('\n\n', start));
+  const gate = deferred(); let calls = 0, fail = false; const messages = [];
+  const { Card } = load('HomeRefreshReview.ts', {}, { ClashViewModel: { refreshProfileConfig: async id => {
+    assert.equal(id, 'A'); calls++; await gate.promise; if (fail) throw new Error('download failed');
+  } }, $r: key => key }, `export class Card { appConfig = { currentProfileId: 'A' }; refreshing = false; ${method} }`);
+  const card = new Card(); card.PromptAction = { showToast: m => messages.push(m.message) };
+  const first = card.refreshConfiguration(); await card.refreshConfiguration(); assert.equal(calls, 1); assert.equal(messages.length, 0);
+  gate.resolve(); await first; assert.equal(card.refreshing, false); assert.equal(messages.length, 1);
+  fail = true; await card.refreshConfiguration(); assert.ok(messages[1].includes('download failed'));
+  card.appConfig.currentProfileId = ''; await card.refreshConfiguration(); assert.equal(calls, 2);
+});
+
+test('Provider RPCs carry the originating profile path through asynchronous upload', async () => {
+  const sent = [];
+  const { SocketProxyService } = load('proxy_core/src/main/ets/rpc/SocketProxyService.ets', {
+    '../profile/ProfileStorage': { generateUUID: () => 'upload' },
+    '@ohos.file.fs': { default: { copy: async () => {}, unlink: async () => {} } },
+    '@kit.CoreFileKit': { fileUri: { getUriFromPath: p => p } }, './IClashManager': rpcGenerated
+  });
+  const service = new SocketProxyService(); service.context = { filesDir: '/files' };
+  service.sendMessageRequest = async (method, args) => { sent.push(args); return ''; };
+  const provider = { name: 'nodes', path: '/providers/A/nodes.yaml' };
+  await service.updateProvider(provider); await service.upLoadProvider(provider, 'document');
+  assert.deepEqual(Array.from(sent[0]), ['nodes', provider.path]);
+  assert.deepEqual(Array.from(sent[1]), ['nodes', '/files/provider-upload.tmp', provider.path]);
 });

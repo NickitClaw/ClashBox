@@ -39,7 +39,6 @@ type healthCheckTarget struct {
 var (
 	isInit             = false
 	configParams       = ConfigExtendedParams{}
-	externalProviders  = map[string]cp.Provider{}
 	currentConfig      *config.Config
 	healthCheckMu      sync.Mutex
 	healthCheckRunning bool
@@ -81,6 +80,9 @@ func handleForceGc() {
 }
 
 func handleShutdown() bool {
+	runLock.Lock()
+	defer runLock.Unlock()
+	liveSnapshot = nil
 	stopListeners()
 	executor.Shutdown()
 	runtime.GC()
@@ -115,7 +117,11 @@ func handleUpdateConfig(bytes []byte) string {
 	}
 
 	configParams = params.Params
-	prof, err := decorationConfig(params.ProfileId, params.SourcePath, params.Config)
+	snapshot, err := prepareConfigSnapshot(bytes, params)
+	if err != nil {
+		return err.Error()
+	}
+	prof, err := decorationConfig(params.ProfileId, snapshot.Source, params.Config)
 	if err != nil {
 		return err.Error()
 	}
@@ -142,6 +148,7 @@ func handleUpdateConfig(bytes []byte) string {
 		return err.Error()
 	}
 	committed = true
+	liveSnapshot = snapshot
 	return ""
 }
 
@@ -516,7 +523,7 @@ func handleCloseConnection(connectionId string) bool {
 func handleGetExternalProviders() string {
 	runLock.Lock()
 	defer runLock.Unlock()
-	externalProviders = getExternalProvidersRaw()
+	externalProviders := getExternalProvidersRaw()
 	eps := make([]ExternalProvider, 0)
 	for _, p := range externalProviders {
 		externalProvider, err := toExternalProvider(p)
@@ -536,7 +543,7 @@ func handleGetExternalProviders() string {
 func handleGetExternalProvider(externalProviderName string) string {
 	runLock.Lock()
 	defer runLock.Unlock()
-	externalProvider, exist := externalProviders[externalProviderName]
+	externalProvider, exist := getExternalProvidersRaw()[externalProviderName]
 	if !exist {
 		return ""
 	}
@@ -592,14 +599,37 @@ func handleUpdateGeoData(geoType string, geoName string, fn func(value string)) 
 	}()
 }
 
-func handleUpdateExternalProvider(providerName string, fn func(value string)) {
+// Caller holds runLock. Provider paths are scoped to the active profile.
+func resolveExternalProvider(name string, expectedPath []string) (cp.Provider, error) {
+	provider, exists := getExternalProvidersRaw()[name]
+	if !exists {
+		return nil, fmt.Errorf("external provider is not exist")
+	}
+	if len(expectedPath) > 0 && expectedPath[0] != "" {
+		current, err := toExternalProvider(provider)
+		if err != nil || current.Path != expectedPath[0] {
+			return nil, fmt.Errorf("配置已切换，请刷新提供者列表")
+		}
+	}
+	return provider, nil
+}
+
+func handleUpdateExternalProvider(providerName string, fn func(value string), expectedPath ...string) {
 	go func() {
-		externalProvider, exist := externalProviders[providerName]
-		if !exist {
-			fn("external provider is not exist")
+		runLock.Lock()
+		externalProvider, err := resolveExternalProvider(providerName, expectedPath)
+		runLock.Unlock()
+		if err != nil {
+			fn(err.Error())
 			return
 		}
-		err := externalProvider.Update()
+		// Network I/O must not block stop, latency tests or configuration changes.
+		err = externalProvider.Update()
+		runLock.Lock()
+		if getExternalProvidersRaw()[providerName] != externalProvider {
+			err = fmt.Errorf("配置已切换，请刷新提供者列表")
+		}
+		runLock.Unlock()
 		if err != nil {
 			fn(err.Error())
 			return
@@ -608,17 +638,16 @@ func handleUpdateExternalProvider(providerName string, fn func(value string)) {
 	}()
 }
 
-func handleSideLoadExternalProvider(providerName string, data []byte, fn func(value string)) {
+func handleSideLoadExternalProvider(providerName string, data []byte, fn func(value string), expectedPath ...string) {
 	go func() {
 		runLock.Lock()
 		defer runLock.Unlock()
-		externalProvider, exist := externalProviders[providerName]
-		if !exist {
-			fn("external provider is not exist")
+		externalProvider, err := resolveExternalProvider(providerName, expectedPath)
+		if err != nil {
+			fn(err.Error())
 			return
 		}
-		err := sideUpdateExternalProvider(externalProvider, data)
-		if err != nil {
+		if err := sideUpdateExternalProvider(externalProvider, data); err != nil {
 			fn(err.Error())
 			return
 		}

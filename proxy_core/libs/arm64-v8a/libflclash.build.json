@@ -1,14 +1,14 @@
 {
   "architecture": "arm64-v8a",
-  "builtAt": "2026-10-10T07:56:12.580Z",
-  "sourceCommit": "946680a8c0395da58ab299082273276930370786",
-  "sourceDigest": "c6c908b896e971b03b6592b251ad8df894e698f00637e942e8fc44e276a58e60",
+  "builtAt": "2026-10-10T16:39:21.301Z",
+  "sourceCommit": "301b88bfc780fb8577f414f9efb60975cac0aae1",
+  "sourceDigest": "0aa56da7075e66bad3fc3174a1cfb80d235ec4ece0e65be1e2e8ad4f1d356de1",
   "submodules": {
     "proxy_core/src/flclash/core": "2ee8e1034c2a9407396eba04ba1a09619d1e2175",
     "proxy_core/src/flclash/gvisor-ohos": "79317d808312e241b8da115b7e07a912c2e4631f"
   },
-  "contractHash": "51b6536c77016427cba6a37665a78810d43ea6093cbeb6cbaa11f7a7976356d5",
-  "binarySHA256": "9b32fcf0971bfe1973bb5b7644d0f4ac13cd46af3bbf2fec2ac1cacb6c864e82",
+  "contractHash": "0702241e7681ab1a0e1f231bbcf1e5b568d9ef12470b4079f1272e2d33aa452a",
+  "binarySHA256": "3b5fc6caf5753bd54461015cc8fa9cba810ee9dea7680a6036b323061fc83d7b",
   "go": "go version go1.24.5 darwin/arm64",
   "clang": "OHOS (dev) clang version 15.0.4 (llvm-project 00dcd9ccdb860908f60ff11b32239084b0908a08)\nTarget: arm64-apple-darwin24.5.0\nThread model: posix\nInstalledDir: /Applications/DevEco-Studio.app/Contents/sdk/default/openharmony/native/llvm/bin",
   "sdk": {

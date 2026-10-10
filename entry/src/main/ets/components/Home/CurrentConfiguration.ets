@@ -22,6 +22,21 @@ struct CurrentConfiguration {
   @Consume('icon_emphasize') icon_emphasize: ResourceColor
   //编辑按钮点击后显示编辑状态判定
   @Consume isShowHomeEdit: boolean
+  @State private refreshing: boolean = false
+
+  private async refreshConfiguration(): Promise<void> {
+    const id = this.appConfig.currentProfileId;
+    if (this.refreshing || !id) return;
+    this.refreshing = true;
+    try {
+      await ClashViewModel.refreshProfileConfig(id);
+      this.PromptAction.showToast({ message: $r('app.string.updated_success_config') });
+    } catch (e) {
+      this.PromptAction.showToast({ message: `更新配置失败：${(e as Error).message}` });
+    } finally {
+      this.refreshing = false;
+    }
+  }
 
 
   build() {
@@ -37,6 +52,7 @@ struct CurrentConfiguration {
       .width('100%')
       .alignItems(HorizontalAlign.Start)
       Button($r('app.string.refresh_IP'))
+        .enabled(!this.refreshing && !!this.appConfig.currentProfileId)
         .width(Xb_ToastUtil.px2vp(212))
         .height(Xb_ToastUtil.px2vp(95))
         .labelStyle({ overflow: TextOverflow.Clip,
@@ -53,7 +69,7 @@ struct CurrentConfiguration {
         .onClick(() => {
           // 在home页添加按钮的半模拟态里和在编辑卡片状态时，无法操作，点击回调写在if判定里
           if (this.isShowHomeEdit == false) {
-            ClashViewModel.updateProfileConfig(this.appConfig.currentProfileId??'')
+            this.refreshConfiguration()
             if (this.uiConfig.isVibrate) {
               customVibrator.vibratorTriggerOfHapticClockTimer()
             }

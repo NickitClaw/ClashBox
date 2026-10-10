@@ -37,5 +37,150 @@
   {
     "file": "config/clashbox_validation.go",
     "source": "validation.go.txt"
+  },
+  {
+    "file": "rules/provider/provider.go",
+    "before": "\"strings\"",
+    "after": "\"strings\"\n\t\"sync\""
+  },
+  {
+    "file": "rules/provider/provider.go",
+    "before": "\tstrategy ruleStrategy\n",
+    "after": "\tstrategy ruleStrategy\n\tstrategyMu sync.RWMutex\n"
+  },
+  {
+    "file": "rules/provider/provider.go",
+    "before": "func (bp *baseProvider) Count() int {",
+    "after": "func (bp *baseProvider) Count() int {\n\tbp.strategyMu.RLock()\n\tdefer bp.strategyMu.RUnlock()"
+  },
+  {
+    "file": "rules/provider/provider.go",
+    "before": "func (bp *baseProvider) Match(metadata *C.Metadata, helper C.RuleMatchHelper) bool {",
+    "after": "func (bp *baseProvider) Match(metadata *C.Metadata, helper C.RuleMatchHelper) bool {\n\tbp.strategyMu.RLock()\n\tdefer bp.strategyMu.RUnlock()"
+  },
+  {
+    "file": "rules/provider/provider.go",
+    "before": "func (bp *baseProvider) Strategy() any {",
+    "after": "func (bp *baseProvider) Strategy() any {\n\tbp.strategyMu.RLock()\n\tdefer bp.strategyMu.RUnlock()"
+  },
+  {
+    "file": "rules/provider/provider.go",
+    "before": "RuleCount:   rp.strategy.Count(),",
+    "after": "RuleCount:   rp.Count(),"
+  },
+  {
+    "file": "rules/provider/provider.go",
+    "before": "\t\trp.strategy = strategy\n\t\ttunnel.RuleUpdateCallback().Emit(rp)",
+    "after": "\t\trp.strategyMu.Lock()\n\t\trp.strategy = strategy\n\t\trp.strategyMu.Unlock()\n\t\ttunnel.RuleUpdateCallback().Emit(rp)"
+  },
+  {
+    "file": "component/resource/fetcher.go",
+    "before": "\"sync\"",
+    "after": "\"sync\"\n \"sync/atomic\""
+  },
+  {
+    "file": "component/resource/fetcher.go",
+    "before": "updatedAt    time.Time",
+    "after": "updatedAt    atomic.Pointer[time.Time]"
+  },
+  {
+    "file": "component/resource/fetcher.go",
+    "before": "return f.updatedAt",
+    "after": "if value := f.updatedAt.Load(); value != nil { return *value }; return time.Time{}"
+  },
+  {
+    "file": "component/resource/fetcher.go",
+    "before": "time.Since(f.updatedAt)",
+    "after": "time.Since(f.UpdatedAt())"
+  },
+  {
+    "file": "component/resource/fetcher.go",
+    "before": "f.vehicle.Read(f.ctx, f.hash)",
+    "after": "f.vehicle.Read(f.ctx, f.currentHash())"
+  },
+  {
+    "file": "component/resource/fetcher.go",
+    "before": "\n\tf.updatedAt = now",
+    "after": "\n\tf.updatedAt.Store(&now)"
+  },
+  {
+    "file": "component/resource/fetcher.go",
+    "before": "\n\t\tf.updatedAt = now",
+    "after": "\n\t\tf.updatedAt.Store(&now)"
+  },
+  {
+    "file": "component/resource/fetcher.go",
+    "before": "\n\t\tf.updatedAt = modTime",
+    "after": "\n\t\tf.updatedAt.Store(&modTime)"
+  },
+  {
+    "file": "component/resource/fetcher.go",
+    "before": "\n\t\t\tf.updatedAt = modTime",
+    "after": "\n\t\t\tf.updatedAt.Store(&modTime)"
+  },
+  {
+    "file": "component/resource/fetcher.go",
+    "before": "func (f *Fetcher[V]) Update() (V, bool, error) {",
+    "after": "func (f *Fetcher[V]) currentHash() utils.HashType {\n f.loadBufMutex.Lock()\n defer f.loadBufMutex.Unlock()\n return f.hash\n}\n\nfunc (f *Fetcher[V]) Update() (V, bool, error) {"
+  },
+  {
+    "file": "log/log.go",
+    "before": "\"os\"",
+    "after": "\"os\"\n \"sync/atomic\""
+  },
+  {
+    "file": "log/log.go",
+    "before": "level  = INFO",
+    "after": "level atomic.Int32"
+  },
+  {
+    "file": "log/log.go",
+    "before": "func init() {",
+    "after": "func init() {\n level.Store(int32(INFO))"
+  },
+  {
+    "file": "log/log.go",
+    "before": "return level",
+    "after": "return LogLevel(level.Load())"
+  },
+  {
+    "file": "log/log.go",
+    "before": "level = newLevel",
+    "after": "level.Store(int32(newLevel))"
+  },
+  {
+    "file": "log/log.go",
+    "before": "data.LogLevel < level",
+    "after": "data.LogLevel < Level()"
+  },
+  {
+    "file": "component/resource/vehicle.go",
+    "before": "\"time\"",
+    "after": "\"time\"\n \"sync/atomic\""
+  },
+  {
+    "file": "component/resource/vehicle.go",
+    "before": "etag = false",
+    "after": "etag atomic.Bool"
+  },
+  {
+    "file": "component/resource/vehicle.go",
+    "before": "return etag",
+    "after": "return etag.Load()"
+  },
+  {
+    "file": "component/resource/vehicle.go",
+    "before": "etag = b",
+    "after": "etag.Store(b)"
+  },
+  {
+    "file": "component/resource/vehicle.go",
+    "before": "if etag &&",
+    "after": "if ETag() &&"
+  },
+  {
+    "file": "component/resource/vehicle.go",
+    "before": "if etag {",
+    "after": "if ETag() {"
   }
 ]

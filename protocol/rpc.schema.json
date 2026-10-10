@@ -299,6 +299,13 @@
             "type": "string",
             "minLength": 1
           }
+        },
+        {
+          "name": "expectedPath",
+          "shape": {
+            "type": "string"
+          },
+          "optional": true
         }
       ],
       "result": {
@@ -326,6 +333,13 @@
             "type": "string",
             "minLength": 1
           }
+        },
+        {
+          "name": "expectedPath",
+          "shape": {
+            "type": "string"
+          },
+          "optional": true
         }
       ],
       "result": {
@@ -1033,6 +1047,26 @@
             }
           ]
         }
+      },
+      "endpoint": "go",
+      "supported": true,
+      "stream": false
+    },
+    {
+      "id": 35,
+      "arkName": "getConfigSnapshot",
+      "goName": "GetConfigSnapshot",
+      "params": [
+        {
+          "name": "path",
+          "shape": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      ],
+      "result": {
+        "type": "boolean"
       },
       "endpoint": "go",
       "supported": true,

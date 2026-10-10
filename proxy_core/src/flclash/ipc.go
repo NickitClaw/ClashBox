@@ -210,15 +210,22 @@ func handleRemoteRequest(request RpcRequest, fn func(RpcResult)) {
 		})
 	case UpdateProvider:
 		name, _ := request.Params[0].(string)
-		log.Println("ipc_go", "UploadProvider ")
+		expectedPath := ""
+		if len(request.Params) > 1 {
+			expectedPath, _ = request.Params[1].(string)
+		}
 		handleUpdateExternalProvider(name, func(value string) {
 			ret.Result = value
 			log.Println("ipc_go", "UploadProvider: "+value)
 			fn(ret)
-		})
+		}, expectedPath)
 	case UploadProvider:
 		provider, _ := request.Params[0].(string)
 		pathUri, _ := request.Params[1].(string)
+		expectedPath := ""
+		if len(request.Params) > 2 {
+			expectedPath, _ = request.Params[2].(string)
+		}
 		data, err := os.ReadFile(pathUri)
 		if err != nil {
 			ret.Error = err.Error()
@@ -229,7 +236,7 @@ func handleRemoteRequest(request RpcRequest, fn func(RpcResult)) {
 		handleSideLoadExternalProvider(provider, data, func(value string) {
 			ret.Result = value
 			fn(ret)
-		})
+		}, expectedPath)
 	case ChangeProxy:
 		group, _ := request.Params[0].(string)
 		proxy, _ := request.Params[1].(string)
@@ -329,6 +336,15 @@ func handleRemoteRequest(request RpcRequest, fn func(RpcResult)) {
 		})
 	case GetCapabilities:
 		ret.Result = rpccontract.CompatibilityJSON(constant.Version)
+		fn(ret)
+	case GetConfigSnapshot:
+		path, _ := request.Params[0].(string)
+		loaded, err := handleGetConfigSnapshot(path)
+		if err != nil {
+			ret.Error = err.Error()
+		} else {
+			ret.Result = loaded
+		}
 		fn(ret)
 	case GetVersion:
 		ver := constant.Version

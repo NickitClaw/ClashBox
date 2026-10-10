@@ -3,6 +3,7 @@ import { initialVpnState } from 'proxy_core/src/main/ets/rpc/VpnLifecycleState';
 import { ConfigActivationService, ConfigActivationHost, ConfigSnapshot } from '../common/services/ConfigActivationService';
 import { ProfileStorage } from 'proxy_core/src/main/ets/profile/ProfileStorage';
 import { ProfileBackup, restoreProfileMetadata } from 'proxy_core/src/main/ets/profile/ProfileBackup';
+import { restoreProfilesAtomically } from 'proxy_core/src/main/ets/profile/ProfileRestore';
 import { assertNativeCompatibility } from 'proxy_core/src/main/ets/rpc/NativeCompatibility';
 import { ProfileRepo } from "proxy_core/src/main/ets/ProfileRepo";
 import { Context, Want } from "@kit.AbilityKit";
@@ -154,13 +155,19 @@ export class ClashViewModel {
 
   // 批量插入配置
   async addOrUpdateProfiles(data: ProfileBackup[]) {
+    await this.queueVpnOperation(async () => {
+      await this.activation.exclusive(() => this.restoreProfiles(data));
+    });
+  }
+
+  private async restoreProfiles(data: ProfileBackup[]): Promise<void> {
     const profiles = data.map((item: ProfileBackup) => restoreProfileMetadata(item));
     const ids = new Set<string>();
     for (const profile of profiles) {
       if (ids.has(profile.id)) throw new Error('备份包含重复的配置 ID');
       ids.add(profile.id);
     }
-    for (const newProfile of profiles) {
+    await restoreProfilesAtomically(this.context, profiles, async (newProfile: Profile) => {
       const name = newProfile.name;
       newProfile.loadContext(this.context);
       if (newProfile.type === ProfileType.Url) {
@@ -182,15 +189,17 @@ export class ClashViewModel {
         newProfile.loadContext(this.context)
         await newProfile.saveByUri(newProfile.url, (path: string): Promise<string> => this.socketProxy.vailConfig(path), newProfile.customRules)
       }
-      const isExists = await newProfile.check();
-      if (isExists) {
-        newProfile.name = name ?? newProfile.name;
-        console.log(`配置${newProfile.name}已发现`)
-        await this.profileRepo.addOrUpdate(newProfile)
-      } else {
-        throw new Error('配置文件不存在，恢复失败')
-      }
-    }
+      newProfile.name = name ?? newProfile.name;
+    }, async (restored: Profile[], replaceFiles: () => Promise<void>) => {
+      // The successful restore is followed by application restart. Stop before
+      // replacing active files so that cold start loads the restored selection.
+      this.desiredRunning = false;
+      ++this.intentGeneration;
+      if (!await this.socketProxy.stopClash()) throw new Error('内核未确认 VPN 停止');
+      await this.refreshVpnState();
+      this.activation.forget();
+      await this.profileRepo.restoreBatch(restored, replaceFiles);
+    });
     EventHub.sendEvent(EventKey.FetchProfile, null)
   }
 
@@ -434,6 +443,25 @@ export class ClashViewModel {
 
   async updateProfile(profile: Profile){
     await this.profileRepo.addOrUpdate(profile)
+  }
+  async updateCurrentGroup(id: string, name: string): Promise<void> {
+    await this.activation.exclusive(async () => {
+      const selected = AppStorage.get<AppConfig>('appConfig')?.currentProfileId;
+      if (selected === id) await this.profileRepo.updateCurrentGroup(id, name);
+    });
+  }
+
+  async resetProfiles(resetSettings: () => Promise<void>): Promise<void> {
+    this.desiredRunning = false;
+    ++this.intentGeneration;
+    await this.queueVpnOperation(async () => {
+      await this.activation.reset(async () => {
+        await this.profileRepo.ClearAll(this.context!);
+        this.proxyGroups = [];
+        await resetSettings();
+        cardManager.setAppConfig(AppStorage.get<AppConfig>('appConfig') || new AppConfig());
+      });
+    });
   }
   async getProfiles(): Promise<Profile[]>{
     return await this.profileRepo.queryAll()
@@ -916,7 +944,17 @@ export class ClashViewModel {
   async initProfile() {
     let appConfig = AppStorage.get<AppConfig>("appConfig") || cardManager.getAppConfig()
     EventHub.sendEvent(EventKey.StartLog, appConfig?.enableLogger)
-    await this.loadConfig(false, 'initProfile')
+    const attached = await this.activation.attach(async (): Promise<ConfigSnapshot | undefined> => {
+      const state = await this.socketProxy.queryVpnState();
+      if (!state.running) return undefined;
+      const payload = await this.socketProxy.getConfigSnapshot();
+      if (!payload) return undefined;
+      const id = payload['profile-id'];
+      const profile = await this.getProfile(id);
+      if (!profile) throw new Error('运行配置已被删除，请先停止 VPN 并重新选择配置');
+      return { id: id, name: profile.name ?? id, payload: payload };
+    });
+    if (!attached) await this.loadConfig(false, 'initProfile')
     EventHub.sendEvent(EventKey.FetchProxyGroup)
     console.error("ClashViewModel.initProfile 初始化成功");
   }

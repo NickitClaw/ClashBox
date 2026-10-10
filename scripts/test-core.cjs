@@ -15,4 +15,19 @@ try {
   });
   if (result.error) console.error(result.error.message);
   process.exitCode = result.status ?? 1;
+  if (process.exitCode === 0) {
+    const wrapper = path.join(temp, 'wrapper');
+    fs.mkdirSync(wrapper);
+    const sources = ['common.go', 'hub.go', 'constant.go', 'config_snapshot.go'];
+    for (const file of sources) fs.copyFileSync(path.join(root, 'proxy_core/src/flclash', file), path.join(wrapper, file));
+    // Only the platform bridge and unused download entry point are stubbed.
+    fs.writeFileSync(path.join(wrapper, 'bridge.go'), 'package main\nfunc sendMessage(message Message) {}\nfunc handleDownloadConfig(a,b,c string)(string,error){panic("unexpected platform download")}\n');
+    fs.copyFileSync(path.join(root, 'tests/wrapper_config_test.go'), path.join(wrapper, 'config_test.go'));
+    const wrapperResult = spawnSync(process.env.GO_BIN || 'go', ['test', '-mod=readonly', '-race', '-overlay', overlay, '-v',
+      ...[...sources, 'bridge.go', 'config_test.go'].map(name => path.join(wrapper, name))], {
+      cwd: path.join(root, 'proxy_core/src/flclash'), stdio: 'inherit', env: { ...process.env, GO111MODULE: 'on' }
+    });
+    if (wrapperResult.error) console.error(wrapperResult.error.message);
+    process.exitCode = wrapperResult.status ?? 1;
+  }
 } finally { fs.rmSync(temp, { recursive: true, force: true }); }

@@ -8,6 +8,7 @@ import (
 	T "github.com/metacubex/mihomo/tunnel"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -101,5 +102,22 @@ func TestValidationNeverTemporarilyChangesLiveMode(t *testing.T) {
 	}
 	if changed.Load() || T.Mode() != T.Global {
 		t.Fatal("validation changed live routing mode")
+	}
+}
+
+func TestValidationAcceptsUnstartedListenersAndReportsPartialParseErrors(t *testing.T) {
+	C.SetHomeDir(t.TempDir())
+	for _, listener := range []string{
+		"{name: local, type: shadowsocks, listen: 127.0.0.1, port: 23456, cipher: aes-128-gcm, password: secret}",
+		"{name: local, type: vmess, listen: 127.0.0.1, port: 23456, users: [{uuid: 00000000-0000-4000-8000-000000000001}]}",
+	} {
+		source := "listeners: [" + listener + "]\nrules: ['MATCH,DIRECT']\n"
+		if err := configops.Validate([]byte(source)); err != nil {
+			t.Fatal(err)
+		}
+		bad := "listeners: [" + listener + ", {name: bad, type: unsupported}]\nrules: ['MATCH,DIRECT']\n"
+		if err := configops.Validate([]byte(bad)); err == nil || strings.Contains(err.Error(), "nil pointer") {
+			t.Fatalf("wrong partial parse result: %v", err)
+		}
 	}
 }
