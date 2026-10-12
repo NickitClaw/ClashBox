@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/metacubex/mihomo/common/utils"
 	"github.com/metacubex/mihomo/component/geodata"
 	"github.com/metacubex/mihomo/component/geodata/router"
 	"github.com/metacubex/mihomo/config"
@@ -536,4 +538,94 @@ func TestGeoIPUpdateInvalidatesCachedMatcherAndRejectsInvalidDownload(t *testing
 	if err != nil || string(saved) != string(replacement) {
 		t.Fatal("failed update changed file", err)
 	}
+}
+
+func TestHealthCheckSnapshotAndConfigPublicationConcurrentApply(t *testing.T) {
+	C.SetHomeDir(t.TempDir())
+	configParams = ConfigExtendedParams{}
+	raw := func() *config.RawConfig { return parseConfig(t, "mode: rule\nrules: ['MATCH,DIRECT']") }
+	if err := applyConfig(raw()); err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	done := make(chan struct{})
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-done:
+				return
+			default:
+				handleHealthCheckAll()
+				if cfg := appliedConfig.Load(); cfg == nil || cfg.General == nil {
+					t.Error("incomplete published config")
+					return
+				}
+			}
+		}
+	}()
+	for i := 0; i < 25; i++ {
+		next := raw()
+		runLock.Lock()
+		err := applyConfig(next)
+		runLock.Unlock()
+		if err != nil {
+			t.Error(err)
+			break
+		}
+	}
+	close(done)
+	wg.Wait()
+}
+
+type gatedHealthProxy struct {
+	C.Proxy
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (p *gatedHealthProxy) URLTest(ctx context.Context, _ string, _ utils.IntRanges[uint16]) (uint16, error) {
+	close(p.entered)
+	select {
+	case <-p.release:
+		return 1, nil
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	}
+}
+func TestDirectSkipsHealthChecksAndSlowChecksDoNotHoldConfigLock(t *testing.T) {
+	C.SetHomeDir(t.TempDir())
+	configParams = ConfigExtendedParams{}
+	if err := applyConfig(parseConfig(t, "mode: direct\nproxy-groups: [{name: AUTO, type: url-test, proxies: [DIRECT], lazy: true}]\nrules: ['MATCH,DIRECT']")); err != nil {
+		t.Fatal(err)
+	}
+	proxies := tunnel.Proxies()
+	p := &gatedHealthProxy{Proxy: proxies["DIRECT"], entered: make(chan struct{}), release: make(chan struct{})}
+	defer close(p.release)
+	tunnel.UpdateProxies(map[string]C.Proxy{"AUTO": proxies["AUTO"], "DIRECT": p}, nil)
+	handleHealthCheckAll()
+	select {
+	case <-p.entered:
+		t.Fatal("direct mode launched a health check")
+	default:
+	}
+	tunnel.SetMode(tunnel.Rule)
+	completed := make(chan struct{})
+	go func() { handleHealthCheckAll(); close(completed) }()
+	select {
+	case <-p.entered:
+	case <-time.After(time.Second):
+		t.Fatal("no check in rule mode")
+	}
+	locked := make(chan struct{})
+	go func() { runLock.Lock(); runLock.Unlock(); close(locked) }()
+	select {
+	case <-locked:
+	case <-time.After(time.Second):
+		t.Fatal("health check blocked config changes")
+	}
+	// Finish before other tests mutate the runtime.
+	p.release <- struct{}{}
+	<-completed
 }

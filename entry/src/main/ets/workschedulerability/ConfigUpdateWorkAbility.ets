@@ -6,6 +6,7 @@ import { wantAgent, WantAgent } from '@kit.AbilityKit';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { getHome, Profile, SocketProxyService } from 'proxy_core';
+import { ProfileStorage, ProfileTransaction } from 'proxy_core/src/main/ets/profile/ProfileStorage';
 import { ProfileRepo } from 'proxy_core/src/main/ets/ProfileRepo';
 import { initClash, validateConfig } from 'libflclash.so';
 import { findAutoUpdateTargets, isProfileUpdateDue } from '../common/utils/AutoUpdateFilter';
@@ -80,26 +81,28 @@ export default class ConfigUpdateWorkAbility extends WorkSchedulerExtensionAbili
     socketProxy.init(this.context)
     for (const target of targets) {
       if (generation !== this.generation) return
-      // The user may disable/delete a later subscription while an earlier download is pending.
-      const profile = await repo.query(target.id)
-      if (!profile || findAutoUpdateTargets([profile]).length === 0) continue
-      if (!isProfileUpdateDue(profile, now)) {
-        hilog.info(0xFF00, TAG, `配置 [${profile.name}] 未到更新间隔，跳过`)
-        continue
-      }
       try {
-        profile.shouldCancelUpdate = () => generation !== this.generation
-        profile.loadContext(this.context, DEFAULT_UA)
-        await profile.update(socketProxy)
-        if (generation !== this.generation) return
-        await repo.updateDownloadMetadata(profile)
+        const cancelled = (): boolean => generation !== this.generation
+        const profile = await new ProfileStorage(this.context, target.id, cancelled).transaction(async (files: ProfileTransaction): Promise<Profile | null> => {
+          // Read after acquiring the cross-process lock. A queued job must not use
+          // a URL/settings snapshot from before a foreground edit, delete or reset.
+          const current = await repo.query(target.id)
+          if (!current || findAutoUpdateTargets([current]).length === 0 || !isProfileUpdateDue(current, now)) return null
+          current.shouldCancelUpdate = cancelled
+          current.loadContext(this.context, DEFAULT_UA)
+          await current.updateInTransaction(files, socketProxy, current.customRules, [],
+            (saved: Profile): Promise<void> => repo.updateDownloadMetadata(saved))
+          return current
+        })
+        if (cancelled()) return
+        if (!profile) continue
         hilog.info(0xFF00, TAG, `配置 [${profile.name}] 更新完成`)
         await this.publishResult(profile, null)
       } catch (e) {
         if (generation !== this.generation) return
         const err = e as Error
-        hilog.error(0xFF00, TAG, `配置 [${profile.name}] 更新失败: ${err.message}`)
-        await this.publishResult(profile, err)
+        hilog.error(0xFF00, TAG, `配置 [${target.name}] 更新失败: ${err.message}`)
+        await this.publishResult(target, err)
       }
     }
   }

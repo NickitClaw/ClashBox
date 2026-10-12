@@ -18,8 +18,10 @@ export class VpnLifecycleState {
       startedAt: state.startedAt, generation: state.generation, error: state.error };
   }
   request(running: boolean): number {
+    // Repeating the same intent must not revoke protection on an existing TUN,
+    // including one just recreated by the watchdog while the UI was loading.
+    if (running !== this.value.desiredRunning) this.value.generation++;
     this.value.desiredRunning = running;
-    this.value.generation++;
     if (!running) this.value.phase = VpnPhase.Stopping;
     else if (!this.value.running && this.value.phase !== VpnPhase.Stopping) this.value.phase = VpnPhase.Starting;
     this.notify();

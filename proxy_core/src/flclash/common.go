@@ -40,6 +40,7 @@ var (
 	ips            = []string{"ipinfo.io", "ipapi.co", "api.ip.sb", "ipwho.is"}
 	b, _           = batch.New[bool](context.Background(), batch.WithConcurrencyNum[bool](50))
 	appliedTestURL atomic.Pointer[string]
+	appliedConfig  atomic.Pointer[config.Config]
 )
 
 func getTestURL() string {
@@ -380,5 +381,7 @@ func applyConfig(rawConfig *config.RawConfig) error {
 		patchSelectGroup()
 	}
 	updateListeners(false)
+	// Publish immutable configuration only after the runtime has applied it.
+	appliedConfig.Store(next)
 	return err
 }

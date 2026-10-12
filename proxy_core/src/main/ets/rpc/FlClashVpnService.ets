@@ -365,13 +365,13 @@ export class FlClashVpnService extends CommonVpnService {
   async startClash(tunFd: number, generation: number = this.intentGeneration): Promise<boolean> {
     const connection = this.vpnConnection
     return await startTun(tunFd, (id: number, fd: number) => {
-      if (!connection || !this.desiredRunning || generation !== this.intentGeneration) {
+      if (!connection || connection !== this.vpnConnection || !this.desiredRunning || generation !== this.intentGeneration) {
         setFdMap(id, false)
         return
       }
       // Bind protection to the connection that owns this TUN, never a replacement.
       connection.protect(fd).then(() => {
-        setFdMap(id, this.desiredRunning && generation === this.intentGeneration)
+        setFdMap(id, connection === this.vpnConnection && this.desiredRunning && generation === this.intentGeneration)
       }).catch(() => { setFdMap(id, false) })
     })
   }

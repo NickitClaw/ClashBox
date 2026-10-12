@@ -85,6 +85,8 @@ func handleShutdown() bool {
 	liveSnapshot = nil
 	stopListeners()
 	executor.Shutdown()
+	currentConfig = nil
+	appliedConfig.Store(nil)
 	runtime.GC()
 	isInit = false
 	return true
@@ -251,8 +253,10 @@ func handleAsyncTestDelay(paramsString string, fn func(string)) {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond*time.Duration(params.Timeout))
 		defer cancel()
 
+		runLock.Lock()
 		proxies := tunnel.ProxiesWithProviders()
 		proxy := proxies[params.ProxyName]
+		runLock.Unlock()
 
 		delayData := &Delay{
 			Name: params.ProxyName,
@@ -304,7 +308,9 @@ func handleAsyncTestDelayBatch(paramsString string, fn func(string)) {
 		testURL = params.TestURL
 	}
 
+	runLock.Lock()
 	proxies := tunnel.ProxiesWithProviders()
+	runLock.Unlock()
 	var mu sync.Mutex
 	results := make([]Delay, 0, len(params.ProxyNames))
 	sem := make(chan struct{}, 50)
@@ -366,13 +372,49 @@ func handleHealthCheckAll() {
 		healthCheckMu.Unlock()
 	}()
 
-	// 直连模式下不需要健康检查，URLTest/Fallback 策略组不生效
-	if currentConfig != nil && string(currentConfig.General.Mode) == "direct" {
+	targets := snapshotHealthCheckTargets()
+	if len(targets) == 0 {
 		return
+	}
+
+	// 限制并发健康检查数，防止大量 protect IPC 堵塞 JS 消息循环（尤其是 rule-provider 下载场景）
+	sem := make(chan struct{}, 10)
+	var wg sync.WaitGroup
+	for _, target := range targets {
+		target := target
+		sem <- struct{}{}
+		wg.Add(1)
+		go func() {
+			defer func() {
+				<-sem
+				wg.Done()
+			}()
+			expectedStatus, err := utils.NewUnsignedRanges[uint16](target.expectedStatus)
+			if err != nil {
+				expectedStatus, _ = utils.NewUnsignedRanges[uint16]("")
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+			defer cancel()
+			_, _ = target.proxy.URLTest(ctx, target.testURL, expectedStatus)
+			log.Debugln("[HealthCheckAll] checked %s", target.name)
+		}()
+	}
+	// 等待所有候选节点健康检查完成，确保 URLTest/Fallback 后台也能基于新延迟切换
+	wg.Wait()
+}
+
+// Capture group membership and settings as one configuration snapshot. Network
+// checks must run after releasing runLock so switching/stopping stays responsive.
+func snapshotHealthCheckTargets() map[string]healthCheckTarget {
+	runLock.Lock()
+	defer runLock.Unlock()
+	// 直连模式下不需要健康检查，URLTest/Fallback 策略组不生效
+	if tunnel.Mode() == tunnel.Direct {
+		return nil
 	}
 	proxies := tunnel.ProxiesWithProviders()
 	if len(proxies) == 0 {
-		return
+		return nil
 	}
 
 	// URLTest/Fallback 的自动切换依赖子节点的 delay history。
@@ -443,34 +485,7 @@ func handleHealthCheckAll() {
 			continue
 		}
 	}
-	if len(targets) == 0 {
-		return
-	}
-
-	// 限制并发健康检查数，防止大量 protect IPC 堵塞 JS 消息循环（尤其是 rule-provider 下载场景）
-	sem := make(chan struct{}, 10)
-	var wg sync.WaitGroup
-	for _, target := range targets {
-		target := target
-		sem <- struct{}{}
-		wg.Add(1)
-		go func() {
-			defer func() {
-				<-sem
-				wg.Done()
-			}()
-			expectedStatus, err := utils.NewUnsignedRanges[uint16](target.expectedStatus)
-			if err != nil {
-				expectedStatus, _ = utils.NewUnsignedRanges[uint16]("")
-			}
-			ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
-			defer cancel()
-			_, _ = target.proxy.URLTest(ctx, target.testURL, expectedStatus)
-			log.Debugln("[HealthCheckAll] checked %s", target.name)
-		}()
-	}
-	// 等待所有候选节点健康检查完成，确保 URLTest/Fallback 后台也能基于新延迟切换
-	wg.Wait()
+	return targets
 }
 
 func handleGetConnections() string {

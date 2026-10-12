@@ -523,9 +523,10 @@ export class ClashViewModel {
         const profile = await this.getProfile(id);
         if (profile) {
           profile.loadContext(this.context);
-          await profile.delete();
+          await profile.delete((): Promise<void> => this.profileRepo.delete(id));
+        } else {
+          await this.profileRepo.delete(id);
         }
-        await this.profileRepo.delete(id);
       }, () => {
         const app = AppStorage.get<AppConfig>('appConfig') || cardManager.getAppConfig() || new AppConfig();
         const next = JSON.parse(JSON.stringify(app)) as AppConfig;

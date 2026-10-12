@@ -17,90 +17,75 @@ export class ProfileRepo {
       securityLevel: relationalStore.SecurityLevel.S1
     };
     try {
-      this.store = await relationalStore.getRdbStore(context, STORE_CONFIG);
-      const versionRs = await this.store.querySql('PRAGMA user_version;');
-      let currentVersion: number;
+      const store = await relationalStore.getRdbStore(context, STORE_CONFIG);
+      const transaction = await store.createTransaction({ transactionType: relationalStore.TransactionType.IMMEDIATE });
       try {
-        versionRs.goToNextRow();
-        currentVersion = versionRs.getLong(0);
-      } finally {
-        versionRs.close();
-      }
+        const versionRs = await transaction.querySql('PRAGMA user_version;');
+        let currentVersion: number;
+        try {
+          versionRs.goToNextRow();
+          currentVersion = versionRs.getLong(0);
+        } finally {
+          versionRs.close();
+        }
 
-      const tableRs = await this.store.querySql("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='Profiles'");
-      let isTableExist: boolean;
-      try {
-        tableRs.goToNextRow();
-        isTableExist = tableRs.getLong(0) > 0;
-      } finally {
-        tableRs.close();
-      }
+        const tableRs = await transaction.querySql("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='Profiles'");
+        let isTableExist: boolean;
+        try {
+          tableRs.goToNextRow();
+          isTableExist = tableRs.getLong(0) > 0;
+        } finally {
+          tableRs.close();
+        }
 
-      if (!isTableExist) {
-        await this.initDb();
-        await this.store.executeSql(`PRAGMA user_version = ${DB_VERSION};`);
-      } else if (currentVersion < DB_VERSION) {
-        await this.upgradeDatabase(currentVersion);
+        if (!isTableExist) await this.initDb(transaction);
+        // Inspect actual columns even at V5: older releases could mark a failed
+        // migration complete. The IMMEDIATE transaction also serializes processes.
+        await this.upgradeDatabase(transaction);
+        if (currentVersion < DB_VERSION) await transaction.execute(`PRAGMA user_version = ${DB_VERSION}`);
+        await transaction.commit();
+      } catch (error) {
+        await transaction.rollback();
+        throw error as Error;
       }
+      this.store = store;
     } catch (error) {
+      this.store = undefined;
       console.error(`ProfileRepo.init 失败, code: ${error.code}, message: ${error.message}`);
+      throw error as Error;
     }
   }
 
-  private async upgradeDatabase(oldVersion: number) {
-    if (oldVersion < 2) {
-      try {
-        await this.store!.executeSql("ALTER TABLE Profiles ADD COLUMN customUA TEXT;");
-      } catch (e) {
-        console.warn("ProfileRepo 升级 V1->V2: 跳过");
-      }
-    }
-    if (oldVersion < 3) {
-      try {
-        await this.store!.executeSql("ALTER TABLE Profiles ADD COLUMN flag TEXT;");
-      } catch (e) {
-        console.warn("ProfileRepo 升级 V2->V3: 跳过");
-      }
-    }
-    if (oldVersion < 4) {
-      try {
-        await this.store!.executeSql("ALTER TABLE Profiles ADD COLUMN overrideMode TEXT;");
-      } catch (e) {
-        console.warn("ProfileRepo 升级 V3->V4: 跳过");
-      }
-    }
-    if (oldVersion < 5) {
-      try {
-        await this.store!.executeSql("ALTER TABLE Profiles ADD COLUMN customRules TEXT;");
-      } catch (e) {
-        console.warn("ProfileRepo 升级 V4->V5: 跳过");
-      }
-    }
-    await this.store!.executeSql(`PRAGMA user_version = ${DB_VERSION};`);
-  }
-
-  async initDb() {
+  private async upgradeDatabase(transaction: relationalStore.Transaction): Promise<void> {
+    const columns = new Set<string>();
+    const cursor = await transaction.querySql('PRAGMA table_info(Profiles)');
     try {
-      const SQL_CREATE_TABLE = "CREATE TABLE IF NOT EXISTS Profiles(" +
-        "id TEXT PRIMARY KEY, " +
-        "name TEXT, " +
-        "type INTEGER NOT NULL, " +
-        "url TEXT, " +
-        "currentGroupName TEXT, " +
-        "isUpdating INTEGER, " +
-        "autoUpdate INTEGER, " +
-        "lastUpdateDate INTEGER, " +
-        "autoUpdateDuration INTEGER, " +
-        "subscriptionInfo TEXT, " +
-        "proxySelected Text, " +
-        "customUA TEXT," +
-        "flag TEXT," +
-        "overrideMode TEXT," +
-        "customRules TEXT)"
-      await this.store!.executeSql(SQL_CREATE_TABLE);
-    } catch (e) {
-      console.error("initDb failure", e)
+      const nameIndex = cursor.getColumnIndex('name');
+      while (cursor.goToNextRow()) columns.add(cursor.getString(nameIndex));
+    } finally { cursor.close(); }
+    for (const column of ['customUA', 'flag', 'overrideMode', 'customRules']) {
+      if (!columns.has(column)) await transaction.execute(`ALTER TABLE Profiles ADD COLUMN ${column} TEXT`);
     }
+  }
+
+  private async initDb(transaction: relationalStore.Transaction): Promise<void> {
+    const SQL_CREATE_TABLE = "CREATE TABLE IF NOT EXISTS Profiles(" +
+      "id TEXT PRIMARY KEY, " +
+      "name TEXT, " +
+      "type INTEGER NOT NULL, " +
+      "url TEXT, " +
+      "currentGroupName TEXT, " +
+      "isUpdating INTEGER, " +
+      "autoUpdate INTEGER, " +
+      "lastUpdateDate INTEGER, " +
+      "autoUpdateDuration INTEGER, " +
+      "subscriptionInfo TEXT, " +
+      "proxySelected Text, " +
+      "customUA TEXT," +
+      "flag TEXT," +
+      "overrideMode TEXT," +
+      "customRules TEXT)"
+    await transaction.execute(SQL_CREATE_TABLE);
   }
 
   async delete(uuid: string) {
@@ -113,8 +98,7 @@ export class ProfileRepo {
     const list = await this.queryAll()
     for (let d of list) {
       d.loadContext(context)
-      await this.delete(d.id)
-      await d.delete()
+      await d.delete((): Promise<void> => this.delete(d.id))
     }
   }
 

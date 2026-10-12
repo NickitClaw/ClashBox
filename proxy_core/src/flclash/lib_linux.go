@@ -26,6 +26,7 @@ import (
 	"github.com/metacubex/mihomo/dns"
 	"github.com/metacubex/mihomo/listener/sing_tun"
 	"github.com/metacubex/mihomo/log"
+	"github.com/metacubex/mihomo/tunnel"
 	"github.com/metacubex/mihomo/tunnel/statistic"
 )
 
@@ -66,14 +67,15 @@ func (cm *ProcessMap) Load(key int64) (string, bool) {
 func StartTUN(fd int, markSocket func(Fd)) error {
 	tunLock.Lock()
 	defer tunLock.Unlock()
-	if fd < 0 || currentConfig == nil {
+	cfg := appliedConfig.Load()
+	if fd < 0 || cfg == nil {
 		return errors.New("TUN configuration is not ready")
 	}
 	if tunListener != nil {
 		return errors.New("TUN is already running")
 	}
 	initSocketHook(markSocket)
-	listener, err := t.Start(fd, currentConfig.General.Tun.Device, currentConfig.General.Tun.Stack, currentConfig.General.Tun.DNSHijack)
+	listener, err := t.Start(fd, cfg.General.Tun.Device, cfg.General.Tun.Stack, cfg.General.Tun.DNSHijack)
 	if err != nil {
 		removeSocketHook()
 		return err
@@ -104,7 +106,7 @@ func startKeepalive() {
 			select {
 			case <-ticker.C:
 				// 直连模式下不需要健康检查和空闲连接清理
-				if currentConfig != nil && string(currentConfig.General.Mode) == "direct" {
+				if tunnel.Mode() == tunnel.Direct {
 					continue
 				}
 				snapshot := statistic.DefaultManager.Snapshot()
@@ -158,7 +160,7 @@ func GetRunTime() string {
 	return strconv.FormatInt(runTime.UnixMilli(), 10)
 }
 func ConfigInited() string {
-	if currentConfig != nil {
+	if appliedConfig.Load() != nil {
 		return "true"
 	}
 	return "false"
@@ -291,8 +293,8 @@ func GetVpnOptions() string {
 	tunLock.Lock()
 	defer tunLock.Unlock()
 	port := 7980
-	if currentConfig != nil {
-		port = currentConfig.General.MixedPort
+	if cfg := appliedConfig.Load(); cfg != nil {
+		port = cfg.General.MixedPort
 	}
 	options := state.AndroidVpnOptions{
 		Enable:           state.CurrentState.Enable,

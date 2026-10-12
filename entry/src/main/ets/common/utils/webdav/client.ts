@@ -1,6 +1,6 @@
 import { rcp } from '@kit.RemoteCommunicationKit';
 import { BusinessError } from '@kit.BasicServicesKit';
-import { buffer, util } from '@kit.ArkTS';
+import { buffer, util, url } from '@kit.ArkTS';
 import { ConnectionTestResult, WebDavConfig, WebDavResponse } from './config';
 import { WebDavLogger } from './logger';
 
@@ -442,30 +442,36 @@ export class WebDavClient {
    * @returns 完整的 URL
    */
   public buildUrl(path: string): string {
-    const baseUrl = this.config.baseUrl.endsWith('/') ? this.config.baseUrl : `${this.config.baseUrl}/`;
+    const base = this.baseUrl();
+    // App paths such as /ClashBox are relative to the configured DAV collection.
+    // Listed resources are already resolved absolute URLs and must not be prefixed again.
+    const absolute = /^[a-z][a-z0-9+.-]*:/i.test(path) || path.startsWith('//');
+    const target = new url.URL(absolute ? path : path.replace(/^\/+/, ''), base);
+    return this.checkedResourceUrl(target, base);
+  }
 
-    let normalizedPath = path.startsWith('/') ? path.substring(1) : path;
+  /** Resolve a server href, whose leading slash is relative to the HTTP origin. */
+  public resolveHref(href: string, collection: string): string {
+    const directory = new url.URL(this.buildUrl(collection));
+    if (!directory.pathname.endsWith('/')) directory.pathname += '/';
+    return this.checkedResourceUrl(new url.URL(href, directory), this.baseUrl());
+  }
 
-    // 检查并移除重复的基础路径
-    const baseUrlPath = baseUrl.replace(/^https?:\/\/[^\/]+/, ''); // 提取路径部分，如 "/dav/"
-    if (baseUrlPath && normalizedPath.startsWith(baseUrlPath)) {
-      normalizedPath = normalizedPath.substring(baseUrlPath.length);
-      this.logger.warn('WebDavClient.buildUrl', '检测到重复路径，已自动修正', {
-        originalPath: path,
-        correctedPath: normalizedPath,
-        baseUrlPath
-      });
+  private baseUrl(): url.URL {
+    const base = new url.URL(this.config.baseUrl);
+    if (base.protocol !== 'https:' && base.protocol !== 'http:') throw new Error('WebDAV 地址必须使用 HTTP 或 HTTPS');
+    if (!base.pathname.endsWith('/')) base.pathname += '/';
+    base.hash = '';
+    return base;
+  }
+
+  private checkedResourceUrl(target: url.URL, base: url.URL): string {
+    // Requests carry this server's Authorization header, including restored hrefs.
+    if (target.origin !== base.origin || target.username !== '' || target.password !== '') {
+      throw new Error('WebDAV 文件地址与配置的服务器不一致');
     }
-
-    const finalUrl = `${baseUrl}${normalizedPath}`;
-
-    this.logger.debug('WebDavClient.buildUrl', '构建URL', {
-      originalPath: path,
-      normalizedPath,
-      finalUrl
-    });
-
-    return finalUrl;
+    target.hash = '';
+    return target.toString();
   }
 
 

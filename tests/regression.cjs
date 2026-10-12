@@ -867,7 +867,8 @@ function vpnFixture({ failTun = false, stopGate, allowVpn = true } = {}) {
     './VpnLifecycleState': lifecycleModule,
     'libflclash.so': {
       stopTun: async () => { calls.push('stopTun'); if (stopGate) await stopGate.promise; calls.push('stopTunDone'); },
-      startTun: async () => { calls.push('startTun'); return true; }, startIpc() {},
+      startTun: async (fd, callback) => { calls.push(['protectCallback', callback]); calls.push('startTun'); return true; },
+      setFdMap: (id, ok) => calls.push(['ack', id, ok]), startIpc() {},
       startListener: () => calls.push('startListener'), stopListener: () => calls.push('stopListener')
     },
     './VpnNoticeController': { VpnNoticeController: class { async start() {} async stop() {} }, publishReconnectNotice: async () => calls.push('reconnectNotice') }
@@ -1006,7 +1007,7 @@ test('View model propagates editor validation failures and emits refresh only af
 
 test('Profile deletion awaits file transaction completion before deleting the database row', async () => {
   const f = viewModelFixture(), gate = deferred(), entered = deferred(); let removed = false;
-  f.service.getProfile = async () => ({ loadContext() {}, delete: async () => { entered.resolve(); await gate.promise; } });
+  f.service.getProfile = async () => ({ loadContext() {}, delete: async persist => { entered.resolve(); await gate.promise; await persist?.(); } });
   f.service.profileRepo.delete = async () => { removed = true; };
   const deleting = f.service.deleteProfile('A'); await entered.promise; assert.equal(removed, false);
   gate.resolve(); await deleting; assert.equal(removed, true);
@@ -1736,13 +1737,14 @@ test('Foreground and background auto-update honor disabled profiles, including c
   const calls = [];
   const profiles = ['A', 'B', 'C', 'D'].map(id => ({ id, name: id, type: 1, autoUpdate: true,
     isUpdating: id === 'B', autoUpdateDuration: 60000, lastUpdateDate: 0,
-    loadContext() {}, async update() { calls.push(id); profiles[2].isUpdating = true; } }));
+    loadContext() {}, async updateInTransaction() { calls.push(id); profiles[2].isUpdating = true; return true; } }));
   profiles[3].type = 0;
   assert.deepEqual(Array.from(autoUpdateFilter.findAutoUpdateTargets(profiles), p => p.id), ['A', 'C']);
   const { default: Work } = load('entry/src/main/ets/workschedulerability/ConfigUpdateWorkAbility.ets', {
     '@kit.BackgroundTasksKit': { WorkSchedulerExtensionAbility: class {} },
     '@kit.PerformanceAnalysisKit': { hilog: quiet },
     proxy_core: { SocketProxyService: class { init() {} } },
+    'proxy_core/src/main/ets/profile/ProfileStorage': { ProfileStorage: class { async transaction(work) { return work({}); } } },
     'proxy_core/src/main/ets/ProfileRepo': { ProfileRepo: class {
       async init() {} async queryAll() { return profiles; }
       async query(id) { return profiles.find(p => p.id === id); }
@@ -1861,7 +1863,7 @@ test('Deleting waits for an in-flight activation and aborts if the selected VPN 
 test('Deleting via ViewModel clears persisted active selection and leaves unrelated selection intact', async () => {
   const app = { currentProfileId: 'A', currentProfileName: 'active', currentProxyName: 'node' };
   const store = new Map([['appConfig', app]]), f = viewModelFixture({ storage: store }), erased = [];
-  f.service.getProfile = async id => ({ loadContext() {}, delete: async () => erased.push(id) });
+  f.service.getProfile = async id => ({ loadContext() {}, delete: async persist => { erased.push(id); await persist?.(); } });
   f.service.profileRepo.delete = async id => erased.push(`db:${id}`);
   await f.service.deleteProfile('B'); assert.equal(store.get('appConfig'), app); assert.ok(!f.calls.includes('stop'));
   await f.service.deleteProfile('A');
@@ -2280,7 +2282,7 @@ test('WebDAV listing accepts DAV namespace aliases and default namespace, exclud
     const entry=(name,folder=false)=>`<${prefix}response><${prefix}href>/dav/ClashBox/${name}</${prefix}href><${prefix}propstat><${prefix}prop><${prefix}displayname>${name}</${prefix}displayname><${prefix}resourcetype>${folder?`<${prefix}collection/>`:''}</${prefix}resourcetype></${prefix}prop></${prefix}propstat></${prefix}response>`;
     const foreign='<bad:response><bad:href>/bad</bad:href></bad:response>';
     const data=`<${prefix}multistatus ${xmlns}="DAV:" xmlns:bad="urn:foreign">${foreign}${entry('',true)}${entry('a.json')}${entry('folder/',true)}</${prefix}multistatus>`;
-    const manager=new WebDavManager({propfind:async()=>({statusCode:207,data}),buildUrl:()=> 'https://example.invalid/dav/ClashBox'},{});
+    const manager=new WebDavManager({propfind:async()=>({statusCode:207,data}),buildUrl:()=> 'https://example.invalid/dav/ClashBox', resolveHref: href => new URL(href, 'https://example.invalid/dav/ClashBox/').href},{});
     const files=await manager.listDirectory('/ClashBox');
     assert.equal(files.length,2);assert.equal(files[0].name,'a.json');assert.equal(files[0].isDirectory,false);
     assert.equal(files[1].isDirectory,true);
@@ -2316,7 +2318,7 @@ test('WebDAV uploads complete UTF-8 bytes across short reads and rejects EOF/rea
 test('WebDAV concurrent uploads, downloads and connection tests own sessions and close them exactly once', async () => {
   const sessions = [];
   const { WebDavClient } = load('entry/src/main/ets/common/utils/webdav/client.ts', {
-    '@kit.ArkTS': { util: {...util, TextDecoder: class { static create() {return {decodeWithStream: bytes => new TextDecoder().decode(bytes)};} }},
+    '@kit.ArkTS': { url: {URL}, util: {...util, TextDecoder: class { static create() {return {decodeWithStream: bytes => new TextDecoder().decode(bytes)};} }},
       buffer: {from: (s, enc) => Buffer.from(s, enc)} },
     './logger': {WebDavLogger: {getInstance: () => quiet}},
     '@kit.RemoteCommunicationKit': {rcp: {
@@ -2347,4 +2349,158 @@ test('WebDAV concurrent uploads, downloads and connection tests own sessions and
   const settled = Promise.allSettled(cancelled); client.destroy(); client.destroy();
   assert.ok((await settled).every(r=>r.status==='rejected')); assert.ok(sessions.every(s=>s.closed===1));
   await assert.rejects(client.get('/after-close'),/已关闭/); assert.equal(sessions.length,6);
+});
+
+
+test('A UI start arriving after watchdog recovery preserves protection; stop and replacement revoke it', async () => {
+  const f = vpnFixture(), ui = viewModelFixture(), entered = deferred(), gate = deferred();
+  f.service.lifecycle.request(true); f.service.lifecycle.move(rpcGenerated.VpnPhase.Recovering);
+  ui.service.socketProxy.queryVpnState = async () => f.service.lifecycle.snapshot();
+  ui.service.socketProxy.startClash = () => f.service.startVpn();
+  ui.service.loadConfig = async () => { entered.resolve(); await gate.promise; return true; };
+  const starting = ui.service.StartVpn(); await entered.promise;
+  assert.equal(await f.service.enqueueVpnOp('heal'), true);
+  const callback = f.calls.find(c => Array.isArray(c) && c[0] === 'protectCallback')[1];
+  callback(1, 99); await flush(); gate.resolve(); await starting;
+  callback(2, 100); await flush();
+  assert.equal(f.calls.filter(c => c === 'startTun').length, 1);
+  assert.equal(f.service.lifecycle.snapshot().running, true);
+  // A same-intent recovery creates a new OS connection; old callbacks must still fail.
+  await f.service.enqueueVpnOp('heal'); callback(3, 101); await flush();
+  const current = f.calls.filter(c => Array.isArray(c) && c[0] === 'protectCallback').at(-1)[1];
+  current(4, 102); await flush(); await f.service.stopVpn(); current(5, 103); await flush();
+  assert.deepEqual(f.calls.filter(c => Array.isArray(c) && c[0] === 'ack'),
+    [['ack', 1, true], ['ack', 2, true], ['ack', 3, false], ['ack', 4, true], ['ack', 5, false]]);
+});
+
+
+test('Background subscriptions reread rows under the file lock after edits, deletion and disabling', async () => {
+  for (const scenario of ['url', 'delete', 'disable', 'fresh']) {
+    const f = profileFixture({passthrough:true}), old = f.create('A'), entered = deferred(), gate = deferred();
+    old.url = 'https://old.invalid/sub'; old.lastUpdateDate = 0; old.autoUpdateDuration = 60000;
+    f.files.set(f.configPath('A'), 'old'); let row = old, queries = 0; const requested = [];
+    const {default: Work} = load('entry/src/main/ets/workschedulerability/ConfigUpdateWorkAbility.ets', {
+      '@kit.BackgroundTasksKit': {WorkSchedulerExtensionAbility: class {}}, '@kit.PerformanceAnalysisKit': {hilog:quiet},
+      proxy_core: {SocketProxyService: class { init() {} async vailConfig() {return '';} async downloadConfig(url, _, path) {
+        requested.push(url); f.files.set(path, 'downloaded new'); return '{}';
+      } }},
+      'proxy_core/src/main/ets/profile/ProfileStorage': f.storage,
+      'proxy_core/src/main/ets/ProfileRepo': {ProfileRepo: class {
+        async init() {} async queryAll() {return [old];} async query() {queries++; return row;}
+        async updateDownloadMetadata(p) {assert.equal(f.files.get(f.configPath('A')), 'downloaded new'); row = p;}
+      }}, '../common/utils/AutoUpdateFilter': autoUpdateFilter
+    });
+    const editing = new f.storage.ProfileStorage(old.context, old.id).transaction(async files => {
+      entered.resolve(); await gate.promise;
+      if (scenario === 'delete') {await files.delete(); row = null; return;}
+      row = f.create('A'); row.url = 'https://new.invalid/sub'; row.lastUpdateDate = scenario === 'fresh' ? Date.now() : 0;
+      row.autoUpdate = scenario !== 'disable'; await files.commit('edited new', async () => '');
+    });
+    await entered.promise;
+    const worker = new Work(); worker.context = old.context; worker.publishResult = async () => {};
+    const updating = worker.runAutoUpdate(0); await flush(); assert.equal(queries, 0);
+    gate.resolve(); await editing; await updating;
+    assert.deepEqual(requested, scenario === 'url' ? ['https://new.invalid/sub'] : []);
+    assert.equal(f.files.get(f.configPath('A')), scenario === 'delete' ? undefined : scenario === 'url' ? 'downloaded new' : 'edited new');
+    f.clean();
+  }
+});
+
+test('Schema migration rolls back failures, retries safely and repairs falsely completed V5 databases', async () => {
+  const required = ['customUA', 'flag', 'overrideMode', 'customRules'];
+  for (const scenario of ['alter', 'create', 'commit', 'broken-v5', 'future']) {
+    let db = { version: scenario === 'broken-v5' ? 5 : scenario === 'future' ? 6 : 1,
+      exists: scenario !== 'create', columns: scenario === 'future' ? [...required] : [] };
+    let fail = !['broken-v5', 'future'].includes(scenario), opened = 0, closed = 0, rollbacks = 0;
+    const initial = JSON.parse(JSON.stringify(db));
+    const store = {createTransaction: async () => {
+      const pending = JSON.parse(JSON.stringify(db));
+      return {
+        querySql: async sql => {
+          const rows = sql.startsWith('PRAGMA table_info') ? pending.columns : [sql.startsWith('PRAGMA user_version') ? pending.version : Number(pending.exists)];
+          let index = -1; opened++;
+          return {goToNextRow: () => ++index < rows.length, getColumnIndex: () => 0,
+            getString: () => rows[index], getLong: () => rows[index], close: () => closed++};
+        },
+        execute: async sql => {
+          if (fail && ((scenario === 'alter' && sql.includes('ADD COLUMN customRules')) ||
+            (scenario === 'create' && sql.startsWith('CREATE')))) throw Error('injected database IO failure');
+          if (sql.startsWith('CREATE')) {pending.exists = true; pending.columns = [...required];}
+          else if (sql.startsWith('ALTER')) {
+            const name = sql.match(/ADD COLUMN (\w+)/)[1];
+            assert.ok(!pending.columns.includes(name), 'do not suppress duplicate-column errors'); pending.columns.push(name);
+          } else if (sql.startsWith('PRAGMA user_version')) pending.version = Number(sql.match(/=\s*(\d+)/)[1]);
+          else assert.fail(`unexpected SQL ${sql}`);
+        },
+        commit: async () => {if (fail && scenario === 'commit') throw Error('injected commit failure'); db = pending;},
+        rollback: async () => {rollbacks++;}
+      };
+    }};
+    const {ProfileRepo} = load('proxy_core/src/main/ets/ProfileRepo.ets', {
+      '@kit.ArkData': {relationalStore: {getRdbStore: async () => store, SecurityLevel: {S1: 1}, TransactionType: {IMMEDIATE: 1}}},
+      '@kit.ArkTS': {JSON}
+    });
+    const repo = new ProfileRepo();
+    if (fail) {
+      await assert.rejects(repo.init({}), /injected/); assert.deepEqual(db, initial);
+      assert.equal(repo.store, undefined); assert.equal(rollbacks, 1); fail = false;
+    }
+    await repo.init({}); assert.equal(db.version, scenario === 'future' ? 6 : 5);
+    assert.deepEqual(db.columns, required); assert.equal(repo.store, store);
+    await repo.init({}); assert.equal(opened, closed);
+  }
+});
+
+test('ClearAll keeps failed deletions discoverable and retries both file and database failures', async () => {
+  for (const fault of ['file', 'database']) {
+    const f = profileFixture({passthrough:true}), p = f.create('A');
+    f.files.set(f.configPath('A'), 'private subscription');
+    const {ProfileRepo} = load('proxy_core/src/main/ets/ProfileRepo.ets'); const repo = new ProfileRepo();
+    let rows = [p], fail = true, dbDeletes = 0;
+    repo.queryAll = async () => rows;
+    repo.delete = async () => {dbDeletes++; if (fail && fault === 'database') throw Error('database deletion failed'); rows = [];};
+    const original = f.storage.ProfileTransaction.prototype.delete;
+    f.storage.ProfileTransaction.prototype.delete = async function() {
+      if (fail && fault === 'file') throw Error('file deletion failed');
+      return original.call(this);
+    };
+    await assert.rejects(repo.ClearAll(p.context), /deletion failed/);
+    assert.equal(rows.length, 1); if (fault === 'file') assert.equal(dbDeletes, 0);
+    fail = false; await repo.ClearAll(p.context);
+    assert.equal(rows.length, 0); assert.equal(f.files.has(f.configPath('A')), false); f.clean();
+  }
+});
+
+
+test('WebDAV merges successful propstats and restores the href instead of the display label', async () => {
+  const logger = {WebDavLogger: {getInstance: () => quiet}};
+  const {WebDavClient} = load('entry/src/main/ets/common/utils/webdav/client.ts', {
+    '@kit.ArkTS': {util, url: {URL}}, './logger': logger
+  });
+  const {WebDavManager} = load('entry/src/main/ets/common/utils/webdav/manager.ts', {
+    '@kit.ArkTS': {util, xml: webdavXmlFixture()}, './logger': logger
+  });
+  const source = fs.readFileSync(path.join(root, 'entry/src/main/ets/components/Settings/Backup.ets'), 'utf8');
+  const select = new Function('item', source.match(/this.selectFilePath = [^\n]+/)[0]);
+  for (const base of ['https://dav.invalid', 'https://dav.invalid/dav', 'https://dav.invalid/dav/']) {
+    const client = new WebDavClient({baseUrl: base, authType: 'none'});
+    const folder = new URL(client.buildUrl('/ClashBox')).pathname;
+    const encoded = 'backup%20%E4%B8%AD%E6%96%87%23%25.json';
+    for (const href of [`${folder}/${encoded}`, `https://dav.invalid${folder}/${encoded}`, encoded]) {
+      for (const failedFirst of [false, true]) {
+        const ok = '<D:propstat><D:prop><D:displayname>Friendly Backup</D:displayname><D:getcontentlength>123</D:getcontentlength></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat>';
+        const missing = '<D:propstat><D:prop><D:displayname/><D:getlastmodified/></D:prop><D:status>HTTP/1.1 404 Not Found</D:status></D:propstat>';
+        const more = '<D:propstat><D:prop><D:getlastmodified>today</D:getlastmodified><D:resourcetype/></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat>';
+        const response = (h, props) => `<D:response><D:href>${h}</D:href>${props}</D:response>`;
+        client.propfind = async () => ({statusCode:207, data:`<D:multistatus xmlns:D="DAV:">${response(folder+'/',ok)}${response(href,(failedFirst?missing+ok:ok+missing)+more)}${response(folder+'/absent.json',missing)}</D:multistatus>`});
+        const manager = new WebDavManager(client, {}), files = await manager.listDirectory('/ClashBox');
+        assert.equal(files.length, 1); assert.equal(files[0].name, 'Friendly Backup');
+        assert.equal(files[0].size, 123); assert.equal(files[0].lastModified, 'today');
+        const page = {}; select.call(page, files[0]);
+        assert.equal(client.buildUrl(page.selectFilePath), `https://dav.invalid${folder}/${encoded}`);
+      }
+    }
+    assert.throws(() => client.resolveHref('https://another.invalid/file', '/ClashBox'), /服务器不一致/);
+    assert.throws(() => client.buildUrl('//another.invalid/file'), /服务器不一致/);
+  }
 });

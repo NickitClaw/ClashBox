@@ -88,8 +88,12 @@ func startTUN(fd C.int, port C.longlong) {
 	go func() {
 		tunLock.Lock()
 		defer tunLock.Unlock()
+		cfg := appliedConfig.Load()
+		if cfg == nil {
+			return
+		}
 		f := int(fd)
-		tunListener, _ = t.Start(f, currentConfig.General.Tun.Device, currentConfig.General.Tun.Stack)
+		tunListener, _ = t.Start(f, cfg.General.Tun.Device, cfg.General.Tun.Stack)
 		if tunListener != nil {
 			log.Infoln("TUN address: %v", tunListener.Address())
 		}
@@ -230,9 +234,13 @@ func getCurrentProfileName() *C.char {
 func getAndroidVpnOptions() *C.char {
 	tunLock.Lock()
 	defer tunLock.Unlock()
+	port := 7980
+	if cfg := appliedConfig.Load(); cfg != nil {
+		port = cfg.General.MixedPort
+	}
 	options := state.AndroidVpnOptions{
 		Enable:           state.CurrentState.Enable,
-		Port:             currentConfig.General.MixedPort,
+		Port:             port,
 		Ipv4Address:      state.DefaultIpv4Address,
 		Ipv6Address:      state.GetIpv6Address(),
 		AccessControl:    state.CurrentState.AccessControl,

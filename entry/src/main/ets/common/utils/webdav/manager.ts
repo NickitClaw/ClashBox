@@ -223,7 +223,9 @@ export class WebDavManager {
         if (!href) continue;
 
         // 过滤逻辑：规范化路径后再比较，兼容有无斜杠的情况
-        const normalizedHref = WebDavManager.normalizePath(href);
+        let resourceUrl: string;
+        try { resourceUrl = this.webdavClient.resolveHref(href, path); } catch (_) { continue; }
+        const normalizedHref = WebDavManager.normalizePath(resourceUrl);
         const builtUrl = this.webdavClient.buildUrl(path);
         const normalizedBuiltUrl = WebDavManager.normalizePath(builtUrl);
 
@@ -237,8 +239,18 @@ export class WebDavManager {
 
         const propstat = WebDavManager.safeGetObject(item, ['propstat']);
         if (!propstat) continue;
-        const props = WebDavManager.safeGetObject(propstat, ['prop']);
-        if (!props) continue;
+        const blocks = Array.isArray(propstat) ? propstat as Record<string, Object>[] : [propstat];
+        const props: Record<string, Object> = {};
+        let hasProperties = false;
+        for (const block of blocks) {
+          const status = WebDavManager.safeGetString(block, ['status']);
+          if (status !== '' && !/^HTTP\/\S+\s+2\d\d(?:\s|$)/i.test(status.trim())) continue;
+          const successful = WebDavManager.safeGetObject(block, ['prop']);
+          if (!successful) continue;
+          hasProperties = true;
+          for (const key of Object.keys(successful)) props[key] = successful[key];
+        }
+        if (!hasProperties) continue;
 
         const displayName = WebDavManager.safeGetString(props, ['displayname']);
         const contentLengthStr = WebDavManager.safeGetString(props, ['getcontentlength']);
@@ -252,7 +264,7 @@ export class WebDavManager {
 
         fileList.push({
           name: finalName,
-          path: href,
+          path: resourceUrl,
           isDirectory: !!isDirectory,
           size: contentLengthStr ? parseInt(contentLengthStr, 10) : 0,
           lastModified: lastModified
@@ -829,7 +841,7 @@ export class WebDavManager {
     if (current && typeof current === 'object' && '_text' in current) {
       return (current as Record<string, Object>)['_text'] as string;
     }
-    return String(current);
+    return typeof current === 'object' ? '' : String(current);
   }
 
   /**

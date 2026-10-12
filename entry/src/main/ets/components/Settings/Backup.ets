@@ -266,7 +266,7 @@ struct Backup {
     if (this.uiConfig.isShowCloudBackupConfig && this.isLogin && this.webdavManager) {
       try {
         const value = await this.webdavManager.listDirectory('/ClashBox')
-        this.rawFiles = value.filter(item => item.path !== '/ClashBox/')
+        this.rawFiles = value.filter(item => !item.isDirectory)
         console.log(`#cloudRestore 获取文件列表状态: ${JSON.stringify(this.rawFiles)}`)
         this.cloudFilesController.open()
       } catch (err) {
@@ -327,7 +327,7 @@ struct CloudFiles {
           .padding({ top: 16, bottom: 16, left: 12, right: 12 })
           .borderRadius(20)
           .onClick(() => {
-            this.selectFilePath = 'ClashBox/' + item.name.replace(/.*?(ClashBox\/)/, "$1");
+            this.selectFilePath = item.path;
             this.showCustomDialogBackgroundBlur = false
             this.controller.close()
           })

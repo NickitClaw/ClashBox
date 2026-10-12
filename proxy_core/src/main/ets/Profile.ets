@@ -74,48 +74,54 @@ export class Profile {
     return await fs.access(await getProfilePath(this.context, this.id));
   }
 
-  async delete(): Promise<void> {
+  async delete(persist?: () => Promise<void>): Promise<void> {
     await this.storage().transaction(async (files) => {
       await files.delete();
       await this.cleanEmptyDirUnlocked();
+      await persist?.();
     });
   }
 
   async update(socketProxy: SocketProxyService, customRules: string[] = this.customRules, deleteRules: string[] = [],
     persist?: (profile: Profile) => Promise<void>): Promise<boolean> {
+    return this.storage().transaction((files) => this.updateInTransaction(files, socketProxy, customRules, deleteRules, persist));
+  }
+
+  /** Caller owns the profile file lock, from rereading its database row through persistence. */
+  async updateInTransaction(files: ProfileTransaction, socketProxy: SocketProxyService,
+    customRules: string[] = this.customRules, deleteRules: string[] = [],
+    persist?: (profile: Profile) => Promise<void>): Promise<boolean> {
     const options = this.transformOptions(customRules, deleteRules);
     const url = this.url;
     const ua = this.globalUa;
-    return this.storage().transaction(async (files) => {
-      const previousContent = persist ? await files.read() : undefined;
-      const previousBackup = persist ? await files.readBackup() : undefined;
-      const previousName = this.name;
-      const previousSubscription = this.subscriptionInfo;
-      const previousDate = this.lastUpdateDate;
-      const downloader = new ProfileDownloader(this.context!, socketProxy, () => this.shouldCancelUpdate?.() === true);
-      const downloaded = await downloader.download(url, ua);
-      const name = downloaded.name || this.name || ProfileDownloader.defaultName(url) || this.id;
-      const subscription = downloaded.userinfo ? SubscriptionInfo.formHString(downloaded.userinfo) : this.subscriptionInfo;
-      options.name = name;
-      await this.prepareAndCommit(files, downloaded.content, (path: string): Promise<string> => socketProxy.vailConfig(path), options);
-      // Only publish metadata after the corresponding bytes have passed validation and committed.
-      this.name = name;
-      this.subscriptionInfo = subscription;
-      this.lastUpdateDate = Date.now();
-      if (persist) {
-        try {
-          await persist(this);
-        } catch (e) {
-          this.name = previousName;
-          this.subscriptionInfo = previousSubscription;
-          this.lastUpdateDate = previousDate;
-          try { await files.restore(previousContent, previousBackup); }
-          catch (_) { throw new Error('配置保存失败且文件回滚失败，请重新导入配置'); }
-          throw e as Error;
-        }
+    const previousContent = persist ? await files.read() : undefined;
+    const previousBackup = persist ? await files.readBackup() : undefined;
+    const previousName = this.name;
+    const previousSubscription = this.subscriptionInfo;
+    const previousDate = this.lastUpdateDate;
+    const downloader = new ProfileDownloader(this.context!, socketProxy, () => this.shouldCancelUpdate?.() === true);
+    const downloaded = await downloader.download(url, ua);
+    const name = downloaded.name || this.name || ProfileDownloader.defaultName(url) || this.id;
+    const subscription = downloaded.userinfo ? SubscriptionInfo.formHString(downloaded.userinfo) : this.subscriptionInfo;
+    options.name = name;
+    await this.prepareAndCommit(files, downloaded.content, (path: string): Promise<string> => socketProxy.vailConfig(path), options);
+    // Only publish metadata after the corresponding bytes have passed validation and committed.
+    this.name = name;
+    this.subscriptionInfo = subscription;
+    this.lastUpdateDate = Date.now();
+    if (persist) {
+      try {
+        await persist(this);
+      } catch (e) {
+        this.name = previousName;
+        this.subscriptionInfo = previousSubscription;
+        this.lastUpdateDate = previousDate;
+        try { await files.restore(previousContent, previousBackup); }
+        catch (_) { throw new Error('配置保存失败且文件回滚失败，请重新导入配置'); }
+        throw e as Error;
       }
-      return true;
-    });
+    }
+    return true;
   }
 
   private async prepareAndCommit(files: ProfileTransaction, raw: string | ArrayBuffer,
