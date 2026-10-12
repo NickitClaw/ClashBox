@@ -1,0 +1,135 @@
+package mmdb
+
+import (
+	"os"
+	"path/filepath"
+	"sync"
+
+	C "github.com/metacubex/mihomo/constant"
+	"github.com/metacubex/mihomo/log"
+	"github.com/oschwald/maxminddb-golang"
+)
+
+var databaseMu sync.Mutex
+var ipReader IPReader
+var asnReader ASNReader
+
+func newIPReader(reader *maxminddb.Reader) IPReader {
+	kind := typeMaxmind
+	switch reader.Metadata.DatabaseType {
+	case "sing-geoip":
+		kind = typeSing
+	case "Meta-geoip0":
+		kind = typeMetaV0
+	}
+	return IPReader{Reader: reader, databaseType: kind}
+}
+
+// Published readers are immutable. maxminddb.Open installs an unmap finalizer;
+// never Close a published reader: copies retained by in-flight lookups keep its
+// mapping alive until the final reader reference is released.
+func IPInstance() IPReader {
+	databaseMu.Lock()
+	defer databaseMu.Unlock()
+	if ipReader.Reader == nil {
+		reader, err := maxminddb.Open(C.Path.MMDB())
+		if err != nil {
+			log.Fatalln("Can't load MMDB: %s", err)
+			return IPReader{}
+		}
+		ipReader = newIPReader(reader)
+	}
+	return ipReader
+}
+
+func ASNInstance() ASNReader {
+	databaseMu.Lock()
+	defer databaseMu.Unlock()
+	if asnReader.Reader == nil {
+		reader, err := maxminddb.Open(C.Path.ASN())
+		if err != nil {
+			log.Fatalln("Can't load ASN: %s", err)
+			return ASNReader{}
+		}
+		asnReader = ASNReader{Reader: reader}
+	}
+	return asnReader
+}
+
+func LoadFromBytes(data []byte) {
+	databaseMu.Lock()
+	defer databaseMu.Unlock()
+	if ipReader.Reader != nil {
+		return
+	}
+	reader, err := maxminddb.FromBytes(data)
+	if err != nil {
+		log.Fatalln("Can't load mmdb: %s", err)
+		return
+	}
+	ipReader = newIPReader(reader)
+}
+
+func ReloadIP()  { reload(false) }
+func ReloadASN() { reload(true) }
+
+func reload(asn bool) {
+	databaseMu.Lock()
+	defer databaseMu.Unlock()
+	path := C.Path.MMDB()
+	if asn {
+		path = C.Path.ASN()
+	}
+	reader, err := maxminddb.Open(path)
+	if err != nil {
+		log.Warnln("Can't reload database: %s", err)
+		return
+	}
+	if asn {
+		asnReader = ASNReader{Reader: reader}
+	} else {
+		ipReader = newIPReader(reader)
+	}
+}
+
+func InstallIP(path string, data []byte) error  { return install(path, data, false) }
+func InstallASN(path string, data []byte) error { return install(path, data, true) }
+
+// Prepare and validate a new inode before publishing. Failed writes/validation/
+// rename leave both the old file and the live reader untouched.
+func install(path string, data []byte, asn bool) error {
+	temp, err := os.CreateTemp(filepath.Dir(path), ".mmdb-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(temp.Name())
+	defer temp.Close()
+	if err = temp.Chmod(0644); err != nil {
+		return err
+	}
+	if _, err = temp.Write(data); err != nil {
+		return err
+	}
+	if err = temp.Sync(); err != nil {
+		return err
+	}
+	if err = temp.Close(); err != nil {
+		return err
+	}
+	reader, err := maxminddb.Open(temp.Name())
+	if err != nil {
+		return err
+	}
+	databaseMu.Lock()
+	defer databaseMu.Unlock()
+	if err = os.Rename(temp.Name(), path); err != nil {
+		reader.Close() // Not published; no concurrent readers exist.
+		return err
+	}
+	if asn {
+		asnReader = ASNReader{Reader: reader}
+	} else {
+		ipReader = newIPReader(reader)
+	}
+	return nil
+}

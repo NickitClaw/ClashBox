@@ -1152,5 +1152,108 @@
     "file": "component/easytier/platform_test.go",
     "before": "\t}}\n\n\ttxt, err :=",
     "after": "\t}})\n\n\ttxt, err :="
+  },
+  {
+    "file": "component/dialer/clashbox_socket_hook.go",
+    "source": "socket_hook.go.txt"
+  },
+  {
+    "file": "component/dialer/socket_hook.go",
+    "before": "var DefaultSocketHook SocketControl",
+    "after": "// Socket hook publication is handled by SetSocketHook/GetSocketHook."
+  },
+  {
+    "file": "component/dialer/socket_hook.go",
+    "before": "func socketHookToToDialer(dialer *net.Dialer) {",
+    "after": "func socketHookToToDialer(dialer *net.Dialer, hook SocketControl) {"
+  },
+  {
+    "file": "component/dialer/socket_hook.go",
+    "before": "func socketHookToListenConfig(lc *net.ListenConfig) {",
+    "after": "func socketHookToListenConfig(lc *net.ListenConfig, hook SocketControl) {"
+  },
+  {
+    "file": "component/dialer/socket_hook.go",
+    "before": "addControlToDialer(dialer, func(ctx context.Context, network, address string, c syscall.RawConn) error {\n\t\treturn DefaultSocketHook(network, address, c)",
+    "after": "addControlToDialer(dialer, func(ctx context.Context, network, address string, c syscall.RawConn) error {\n\t\treturn hook(network, address, c)"
+  },
+  {
+    "file": "component/dialer/socket_hook.go",
+    "before": "addControlToListenConfig(lc, func(ctx context.Context, network, address string, c syscall.RawConn) error {\n\t\treturn DefaultSocketHook(network, address, c)",
+    "after": "addControlToListenConfig(lc, func(ctx context.Context, network, address string, c syscall.RawConn) error {\n\t\treturn hook(network, address, c)"
+  },
+  {
+    "file": "component/dialer/dialer.go",
+    "before": "if DefaultSocketHook != nil { // ignore interfaceName, routingMark when DefaultSocketHook not null (in CMFA)\n\t\tsocketHookToListenConfig(lc)",
+    "after": "if hook := GetSocketHook(); hook != nil {\n\t\tsocketHookToListenConfig(lc, hook)"
+  },
+  {
+    "file": "component/dialer/dialer.go",
+    "before": "if DefaultSocketHook != nil { // ignore interfaceName, routingMark and tfo when DefaultSocketHook not null (in CMFA)\n\t\tsocketHookToToDialer(dialer)",
+    "after": "if hook := GetSocketHook(); hook != nil {\n\t\tsocketHookToToDialer(dialer, hook)"
+  },
+  {
+    "file": "component/dialer/dialer.go",
+    "before": "if DefaultSocketHook != nil {\n\t\t\treturn DefaultSocketHook(network, address, conn)",
+    "after": "if hook := GetSocketHook(); hook != nil {\n\t\t\treturn hook(network, address, conn)"
+  },
+  {
+    "file": "component/mmdb/mmdb.go",
+    "before": "package mmdb\n\nimport (\n\t\"sync\"\n\n\tmihomoOnce \"github.com/metacubex/mihomo/common/once\"\n\tC \"github.com/metacubex/mihomo/constant\"\n\t\"github.com/metacubex/mihomo/log\"\n\n\t\"github.com/oschwald/maxminddb-golang\"\n)\n\ntype databaseType = uint8\n\nconst (\n\ttypeMaxmind databaseType = iota\n\ttypeSing\n\ttypeMetaV0\n)\n\nvar (\n\tipReader  IPReader\n\tasnReader ASNReader\n\tipOnce    sync.Once\n\tasnOnce   sync.Once\n)\n\nfunc LoadFromBytes(buffer []byte) {\n\tipOnce.Do(func() {\n\t\tmmdb, err := maxminddb.FromBytes(buffer)\n\t\tif err != nil {\n\t\t\tlog.Fatalln(\"Can't load mmdb: %s\", err.Error())\n\t\t}\n\t\tipReader = IPReader{Reader: mmdb}\n\t\tswitch mmdb.Metadata.DatabaseType {\n\t\tcase \"sing-geoip\":\n\t\t\tipReader.databaseType = typeSing\n\t\tcase \"Meta-geoip0\":\n\t\t\tipReader.databaseType = typeMetaV0\n\t\tdefault:\n\t\t\tipReader.databaseType = typeMaxmind\n\t\t}\n\t})\n}\n\nfunc Verify(path string) bool {\n\tinstance, err := maxminddb.Open(path)\n\tif err == nil {\n\t\tinstance.Close()\n\t}\n\treturn err == nil\n}\n\nfunc IPInstance() IPReader {\n\tipOnce.Do(func() {\n\t\tmmdbPath := C.Path.MMDB()\n\t\tlog.Infoln(\"Load MMDB file: %s\", mmdbPath)\n\t\tmmdb, err := maxminddb.Open(mmdbPath)\n\t\tif err != nil {\n\t\t\tlog.Fatalln(\"Can't load MMDB: %s\", err.Error())\n\t\t}\n\t\tipReader = IPReader{Reader: mmdb}\n\t\tswitch mmdb.Metadata.DatabaseType {\n\t\tcase \"sing-geoip\":\n\t\t\tipReader.databaseType = typeSing\n\t\tcase \"Meta-geoip0\":\n\t\t\tipReader.databaseType = typeMetaV0\n\t\tdefault:\n\t\t\tipReader.databaseType = typeMaxmind\n\t\t}\n\t})\n\n\treturn ipReader\n}\n\nfunc ASNInstance() ASNReader {\n\tasnOnce.Do(func() {\n\t\tASNPath := C.Path.ASN()\n\t\tlog.Infoln(\"Load ASN file: %s\", ASNPath)\n\t\tasn, err := maxminddb.Open(ASNPath)\n\t\tif err != nil {\n\t\t\tlog.Fatalln(\"Can't load ASN: %s\", err.Error())\n\t\t}\n\t\tasnReader = ASNReader{Reader: asn}\n\t})\n\n\treturn asnReader\n}\n\nfunc ReloadIP() {\n\tmihomoOnce.Reset(&ipOnce)\n}\n\nfunc ReloadASN() {\n\tmihomoOnce.Reset(&asnOnce)\n}\n",
+    "after": "package mmdb\n\nimport \"github.com/oschwald/maxminddb-golang\"\n\ntype databaseType = uint8\n\nconst (\n\ttypeMaxmind databaseType = iota\n\ttypeSing\n\ttypeMetaV0\n)\n\nfunc Verify(path string) bool {\n\tinstance, err := maxminddb.Open(path)\n\tif err == nil {\n\t\tinstance.Close()\n\t}\n\treturn err == nil\n}\n\n"
+  },
+  {
+    "file": "component/mmdb/clashbox_mmdb.go",
+    "source": "mmdb.go.txt"
+  },
+  {
+    "file": "component/updater/patch.go",
+    "before": "\n\t\"github.com/oschwald/maxminddb-golang\"",
+    "after": ""
+  },
+  {
+    "file": "component/updater/patch.go",
+    "before": "func UpdateMMDBWithPath(path string) (err error) {\n\tdefer mmdb.ReloadIP()\n\tdata, err := downloadForBytes(geodata.MmdbUrl())\n\tif err != nil {\n\t\treturn fmt.Errorf(\"can't download MMDB database file: %w\", err)\n\t}\n\tinstance, err := maxminddb.FromBytes(data)\n\tif err != nil {\n\t\treturn fmt.Errorf(\"invalid MMDB database file: %s\", err)\n\t}\n\t_ = instance.Close()\n\n\tmmdb.IPInstance().Reader.Close()\n\tif err = saveFile(data, path); err != nil {\n\t\treturn fmt.Errorf(\"can't save MMDB database file: %w\", err)\n\t}\n\treturn nil\n}\n",
+    "after": "func UpdateMMDBWithPath(path string) error {\n data, err := downloadForBytes(geodata.MmdbUrl())\n if err != nil { return fmt.Errorf(\"can't download MMDB database file: %w\", err) }\n if err := mmdb.InstallIP(path, data); err != nil { return fmt.Errorf(\"can't install MMDB database file: %w\", err) }\n return nil\n}\n"
+  },
+  {
+    "file": "component/updater/patch.go",
+    "before": "func UpdateASNWithPath(path string) (err error) {\n\tdefer mmdb.ReloadASN()\n\tdata, err := downloadForBytes(geodata.ASNUrl())\n\tif err != nil {\n\t\treturn fmt.Errorf(\"can't download ASN database file: %w\", err)\n\t}\n\n\tinstance, err := maxminddb.FromBytes(data)\n\tif err != nil {\n\t\treturn fmt.Errorf(\"invalid ASN database file: %s\", err)\n\t}\n\t_ = instance.Close()\n\n\tmmdb.ASNInstance().Reader.Close()\n\tif err = saveFile(data, path); err != nil {\n\t\treturn fmt.Errorf(\"can't save ASN database file: %w\", err)\n\t}\n\treturn nil\n}\n",
+    "after": "func UpdateASNWithPath(path string) error {\n data, err := downloadForBytes(geodata.ASNUrl())\n if err != nil { return fmt.Errorf(\"can't download ASN database file: %w\", err) }\n if err := mmdb.InstallASN(path, data); err != nil { return fmt.Errorf(\"can't install ASN database file: %w\", err) }\n return nil\n}\n"
+  },
+  {
+    "file": "component/updater/update_geo.go",
+    "before": "\tdefer mmdb.ReloadIP()\n\tmmdb.IPInstance().Reader.Close() //  mmdb is loaded with mmap, so it needs to be closed before overwriting the file\n\tif err = vehicle.Write(data); err != nil {",
+    "after": "\tif err = mmdb.InstallIP(vehicle.Path(), data); err != nil {"
+  },
+  {
+    "file": "component/updater/update_geo.go",
+    "before": "\tdefer mmdb.ReloadASN()\n\tmmdb.ASNInstance().Reader.Close() //  mmdb is loaded with mmap, so it needs to be closed before overwriting the file\n\tif err = vehicle.Write(data); err != nil {",
+    "after": "\tif err = mmdb.InstallASN(vehicle.Path(), data); err != nil {"
+  },
+  {
+    "file": "component/mmdb/reader.go",
+    "before": "\"net\"",
+    "after": "\"net\"\n \"runtime\""
+  },
+  {
+    "file": "component/mmdb/reader.go",
+    "before": "func (r IPReader) LookupCode(ipAddress net.IP) []string {",
+    "after": "func (r IPReader) LookupCode(ipAddress net.IP) []string {\n defer runtime.KeepAlive(r.Reader)"
+  },
+  {
+    "file": "component/mmdb/reader.go",
+    "before": "func (r ASNReader) LookupASN(ip net.IP) (string, string) {",
+    "after": "func (r ASNReader) LookupASN(ip net.IP) (string, string) {\n defer runtime.KeepAlive(r.Reader)"
+  },
+  {
+    "file": "common/queue/queue.go",
+    "before": "func (q *Queue[T]) Pop() (head T) {\n\tif len(q.items) == 0 {\n\t\treturn\n\t}\n\n\tq.lock.Lock()\n\thead = q.items[0]\n\tq.items = q.items[1:]\n\tq.lock.Unlock()\n\treturn head\n}",
+    "after": "func (q *Queue[T]) Pop() (head T) {\n q.lock.Lock()\n defer q.lock.Unlock()\n\tif len(q.items) == 0 {\n\t\treturn\n\t}\n\n\thead = q.items[0]\n\tq.items = q.items[1:]\n\treturn head\n}"
+  },
+  {
+    "file": "common/queue/queue.go",
+    "before": "func (q *Queue[T]) Last() (last T) {\n\tif len(q.items) == 0 {\n\t\treturn\n\t}\n\n\tq.lock.RLock()\n\tlast = q.items[len(q.items)-1]\n\tq.lock.RUnlock()\n\treturn last\n}",
+    "after": "func (q *Queue[T]) Last() (last T) {\n q.lock.RLock()\n defer q.lock.RUnlock()\n\tif len(q.items) == 0 {\n\t\treturn\n\t}\n\n\tlast = q.items[len(q.items)-1]\n\treturn last\n}"
   }
 ]

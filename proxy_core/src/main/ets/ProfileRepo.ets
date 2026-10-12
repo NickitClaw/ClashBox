@@ -2,7 +2,6 @@ import { relationalStore, ValuesBucket } from '@kit.ArkData'
 import { common } from '@kit.AbilityKit';
 import { Profile } from './Profile';
 import { SubscriptionInfo } from './models/Common';
-import { BusinessError } from '@kit.BasicServicesKit';
 import { JSON } from '@kit.ArkTS';
 
 const DB_VERSION = 5;
@@ -135,27 +134,16 @@ export class ProfileRepo {
     }
   }
 
-  queryAll(): Promise<Profile[]> {
+  async queryAll(): Promise<Profile[]> {
+    if (!this.store) throw new Error('配置数据库尚未初始化');
     const predicates = new relationalStore.RdbPredicates('Profiles');
     const list: Profile[] = [];
-    if (this.store) {
-      return this.store.query(predicates)
-        .then((cursor) => {
-          try {
-            while (cursor.goToNextRow()) {
-              list.push(this.getFromCursor(cursor));
-            }
-            return list;
-          } finally {
-            cursor.close();
-          }
-        })
-        .catch((err: BusinessError) => {
-          console.error(`ProfileRepo.queryAll failed, code is ${err.code}, message is ${err.message}`);
-          return [];
-        })
-    } else {
-      return Promise.resolve([])
+    const cursor = await this.store.query(predicates);
+    try {
+      while (cursor.goToNextRow()) list.push(this.getFromCursor(cursor));
+      return list;
+    } finally {
+      cursor.close();
     }
   }
 

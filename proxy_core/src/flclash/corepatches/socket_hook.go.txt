@@ -1,0 +1,43 @@
+package dialer
+
+import (
+	"errors"
+	"sync"
+	"syscall"
+)
+
+var socketHookState struct {
+	sync.RWMutex
+	hook       SocketControl
+	generation uint64
+}
+
+var ErrSocketHookExpired = errors.New("socket protection generation has stopped")
+
+// SetSocketHook waits for active callbacks. The owner must cancel any pending
+// protection acknowledgements before removing the hook.
+func SetSocketHook(hook SocketControl) {
+	socketHookState.Lock()
+	defer socketHookState.Unlock()
+	socketHookState.generation++
+	socketHookState.hook = hook
+}
+
+// GetSocketHook captures one generation. A dial prepared before stop must fail
+// closed rather than skip protection or invoke a subsequent VPN's callback.
+func GetSocketHook() SocketControl {
+	socketHookState.RLock()
+	hook, generation := socketHookState.hook, socketHookState.generation
+	socketHookState.RUnlock()
+	if hook == nil {
+		return nil
+	}
+	return func(network, address string, conn syscall.RawConn) error {
+		socketHookState.RLock()
+		defer socketHookState.RUnlock()
+		if generation != socketHookState.generation {
+			return ErrSocketHookExpired
+		}
+		return hook(network, address, conn)
+	}
+}

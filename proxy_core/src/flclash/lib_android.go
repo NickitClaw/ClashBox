@@ -137,7 +137,7 @@ func markSocket(fd Fd) {
 }
 
 func initSocketHook() {
-	dialer.DefaultSocketHook = func(network, address string, conn syscall.RawConn) error {
+	dialer.SetSocketHook(func(network, address string, conn syscall.RawConn) error {
 		if platform.ShouldBlockConnection() {
 			return errBlocked
 		}
@@ -164,11 +164,11 @@ func initSocketHook() {
 				}
 			}
 		})
-	}
+	})
 }
 
 func removeSocketHook() {
-	dialer.DefaultSocketHook = nil
+	dialer.SetSocketHook(nil)
 }
 
 func init() {

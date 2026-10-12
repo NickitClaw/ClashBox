@@ -39,15 +39,16 @@ type Fd struct {
 }
 
 var (
-	tunListener   *sing_tun.Listener
-	fdWaiters     sync.Map
-	fdCounter     int64 = 0
-	counter       int64 = 0
-	processMap    ProcessMap
-	tunLock       sync.Mutex
-	runTime       *time.Time
-	errBlocked    = errors.New("blocked")
-	keepaliveStop chan struct{}
+	tunListener    *sing_tun.Listener
+	fdWaiters      sync.Map
+	fdCounter      int64 = 0
+	counter        int64 = 0
+	processMap     ProcessMap
+	tunLock        sync.Mutex
+	runTime        *time.Time
+	errBlocked     = errors.New("blocked")
+	keepaliveStop  chan struct{}
+	socketHookStop chan struct{}
 )
 
 func (cm *ProcessMap) Store(key int64, value string) {
@@ -192,7 +193,9 @@ func acknowledgeFd(id int64, success bool) {
 func SetFdMap(fd C.long) { acknowledgeFd(int64(fd), true) }
 
 func initSocketHook(markSocket func(Fd)) {
-	dialer.DefaultSocketHook = func(network, address string, conn syscall.RawConn) error {
+	stop := make(chan struct{})
+	socketHookStop = stop
+	dialer.SetSocketHook(func(network, address string, conn syscall.RawConn) error {
 		if platform.ShouldBlockConnection() {
 			return errBlocked
 		}
@@ -206,6 +209,8 @@ func initSocketHook(markSocket func(Fd)) {
 			timer := time.NewTimer(5 * time.Second)
 			defer timer.Stop()
 			select {
+			case <-stop:
+				protectErr = errors.New("VPN socket protection stopped")
 			case ok := <-result:
 				if !ok {
 					protectErr = errors.New("VPN socket protection failed")
@@ -220,11 +225,15 @@ func initSocketHook(markSocket func(Fd)) {
 			return err
 		}
 		return protectErr
-	}
+	})
 }
 
 func removeSocketHook() {
-	dialer.DefaultSocketHook = nil
+	if socketHookStop != nil {
+		close(socketHookStop)
+		socketHookStop = nil
+	}
+	dialer.SetSocketHook(nil)
 }
 
 func init() {

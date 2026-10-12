@@ -265,7 +265,7 @@ func handleAsyncTestDelay(paramsString string, fn func(string)) {
 			return false, nil
 		}
 
-		testUrl := constant.DefaultTestURL
+		testUrl := getTestURL()
 		if params.TestUrl != "" {
 			testUrl = params.TestUrl
 		}
@@ -299,7 +299,7 @@ func handleAsyncTestDelayBatch(paramsString string, fn func(string)) {
 		return
 	}
 
-	testURL := constant.DefaultTestURL
+	testURL := getTestURL()
 	if params.TestURL != "" {
 		testURL = params.TestURL
 	}
@@ -404,7 +404,7 @@ func handleHealthCheckAll() {
 		}
 		testURL := info.TestURL
 		if testURL == "" {
-			testURL = constant.DefaultTestURL
+			testURL = getTestURL()
 		}
 		for _, childName := range info.All {
 			child := proxies[childName]

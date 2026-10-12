@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/metacubex/mihomo/adapter"
 	"github.com/metacubex/mihomo/adapter/inbound"
@@ -34,11 +35,19 @@ import (
 )
 
 var (
-	isRunning = false
-	runLock   sync.Mutex
-	ips       = []string{"ipinfo.io", "ipapi.co", "api.ip.sb", "ipwho.is"}
-	b, _      = batch.New[bool](context.Background(), batch.WithConcurrencyNum[bool](50))
+	isRunning      = false
+	runLock        sync.Mutex
+	ips            = []string{"ipinfo.io", "ipapi.co", "api.ip.sb", "ipwho.is"}
+	b, _           = batch.New[bool](context.Background(), batch.WithConcurrencyNum[bool](50))
+	appliedTestURL atomic.Pointer[string]
 )
+
+func getTestURL() string {
+	if url := appliedTestURL.Load(); url != nil {
+		return *url
+	}
+	return constant.DefaultTestURL
+}
 
 type ExternalProviders []ExternalProvider
 
@@ -345,15 +354,24 @@ func patchSelectGroup() {
 
 // Caller holds runLock from preparation through publication. Parse failures never replace the live configuration.
 func applyConfig(rawConfig *config.RawConfig) error {
+	testURL := constant.DefaultTestURL
+	if configParams.TestURL != nil && strings.TrimSpace(*configParams.TestURL) != "" {
+		testURL = strings.TrimSpace(*configParams.TestURL)
+		// Groups and provider health checks capture this during parsing. Do not
+		// mutate Mihomo's global fallback while other requests are using it.
+		for _, group := range rawConfig.ProxyGroup {
+			group["url"] = testURL
+		}
+	}
 	next, err := config.ParseRawConfig(rawConfig)
 	if err != nil {
 		return err
 	}
 	currentConfig = next
-	if configParams.TestURL != nil {
-		constant.DefaultTestURL = *configParams.TestURL
-	}
-	if configParams.IsPatch {
+	// A different health-check URL requires newly constructed groups/providers.
+	patchOnly := configParams.IsPatch && testURL == getTestURL()
+	appliedTestURL.Store(&testURL)
+	if patchOnly {
 		patchConfig()
 	} else {
 		handleCloseConnectionsUnLock()

@@ -141,6 +141,9 @@ GitHub Actions 按提交 SHA 固定。轻量 CI 检查生成文件、原生源�
 配置语义校验和 Sniffer 开关，并在解析过程尚未结束时检查运行模式未被改动。测试 HTTP 服务仅监听本机。
 还覆盖规则更新与路由并发、未启动的入站监听器清理，以及真实 Go 包装层的运行快照、提供者切换和 Geo 资源地址热更新。
 请求历史的并发读写/清空测试已纳入 `npm run check` 的竞态检查。
+原生回归还覆盖 VPN 停止/重启时的旧拨号回调、MMDB/ASN 更新与在途查询、测速地址首次加载和失败回滚，
+以及测速历史队列的并发读写。ArkTS 回归覆盖订阅 URL 编辑的文件/数据库回滚、查询失败时中止备份和清空，
+以及 WebDAV 命名空间解析、短读取和提前 EOF；这些本地测试不能替代真机 VPN 流量验证。
 全量开发机检查顺序为 `npm run check`、`npm run test:core`、`npm run test:sniffer`，随后进行 HAP 构建。
 
 在已安装 API 26、OpenHarmony Go 和 `devecocli` 的开发机上，初始化子模块并执行 `ohpm install --all` 后：

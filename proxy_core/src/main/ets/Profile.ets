@@ -81,11 +81,17 @@ export class Profile {
     });
   }
 
-  async update(socketProxy: SocketProxyService, customRules: string[] = this.customRules, deleteRules: string[] = []): Promise<boolean> {
+  async update(socketProxy: SocketProxyService, customRules: string[] = this.customRules, deleteRules: string[] = [],
+    persist?: (profile: Profile) => Promise<void>): Promise<boolean> {
     const options = this.transformOptions(customRules, deleteRules);
     const url = this.url;
     const ua = this.globalUa;
     return this.storage().transaction(async (files) => {
+      const previousContent = persist ? await files.read() : undefined;
+      const previousBackup = persist ? await files.readBackup() : undefined;
+      const previousName = this.name;
+      const previousSubscription = this.subscriptionInfo;
+      const previousDate = this.lastUpdateDate;
       const downloader = new ProfileDownloader(this.context!, socketProxy, () => this.shouldCancelUpdate?.() === true);
       const downloaded = await downloader.download(url, ua);
       const name = downloaded.name || this.name || ProfileDownloader.defaultName(url) || this.id;
@@ -96,6 +102,18 @@ export class Profile {
       this.name = name;
       this.subscriptionInfo = subscription;
       this.lastUpdateDate = Date.now();
+      if (persist) {
+        try {
+          await persist(this);
+        } catch (e) {
+          this.name = previousName;
+          this.subscriptionInfo = previousSubscription;
+          this.lastUpdateDate = previousDate;
+          try { await files.restore(previousContent, previousBackup); }
+          catch (_) { throw new Error('配置保存失败且文件回滚失败，请重新导入配置'); }
+          throw e as Error;
+        }
+      }
       return true;
     });
   }

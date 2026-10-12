@@ -39,6 +39,50 @@ func parseConfig(t *testing.T, yaml string) *config.RawConfig {
 	return raw
 }
 
+func TestConfiguredTestURLAppliesOnFirstLoadAndFailedChangeIsIsolated(t *testing.T) {
+	C.SetHomeDir(t.TempDir())
+	original := C.DefaultTestURL
+	appliedTestURL.Store(nil)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(204) }))
+	defer server.Close()
+	firstURL, secondURL := server.URL+"/first", server.URL+"/second"
+	input := filepath.Join(t.TempDir(), "source.yaml")
+	source := "proxy-groups: [{name: AUTO, type: url-test, proxies: [DIRECT, REJECT]}, {name: FALLBACK, type: fallback, proxies: [DIRECT, REJECT]}]\nrules: ['MATCH,AUTO']\n"
+	os.WriteFile(input, []byte(source), 0600)
+	apply := func(url string, patch bool) string {
+		request, _ := json.Marshal(map[string]any{"profile-id": "A", "source-path": input, "config": config.DefaultRawConfig(),
+			"params": ConfigExtendedParams{TestURL: &url, IsPatch: patch}})
+		return handleUpdateConfig(request)
+	}
+	assertURL := func(expected string) {
+		t.Helper()
+		for _, name := range []string{"AUTO", "FALLBACK"} {
+			b, _ := tunnel.Proxies()[name].MarshalJSON()
+			var group map[string]any
+			json.Unmarshal(b, &group)
+			if group["testUrl"] != expected {
+				t.Fatalf("%s expected %s: %s", name, expected, b)
+			}
+		}
+		if getTestURL() != expected || C.DefaultTestURL != original {
+			t.Fatal("wrong fallback or global mutation")
+		}
+	}
+	if err := apply(firstURL, false); err != "" {
+		t.Fatal(err)
+	}
+	assertURL(firstURL)
+	if err := apply(secondURL, true); err != "" {
+		t.Fatal(err)
+	}
+	assertURL(secondURL)
+	os.WriteFile(input, []byte("proxy-groups: [{name: bad, type: url-test, proxies: [missing]}]"), 0600)
+	if err := apply("https://failed.invalid/204", false); err == "" {
+		t.Fatal("invalid config accepted")
+	}
+	assertURL(secondURL)
+}
+
 func TestRuntimeSnapshotDoesNotReloadOrReadReplacedSubscription(t *testing.T) {
 	dir := t.TempDir()
 	C.SetHomeDir(dir)

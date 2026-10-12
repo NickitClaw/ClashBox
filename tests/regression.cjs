@@ -2185,6 +2185,134 @@ test('Backup reports success only for completed exports and 2xx uploads, and coa
   }
 });
 
+test('Editing a subscription URL commits new bytes and metadata together, with rollback on failure', async () => {
+  for (const scenario of ['changed', 'unchanged', 'validation', 'database', 'download']) {
+    const f = profileFixture({passthrough:true}), old = f.create('A');
+    old.url = 'https://old.invalid/sub'; old.name = 'old'; old.lastUpdateDate = 10;
+    old.proxySelected.set('PROXY','node'); old.autoUpdate = false;
+    f.files.set(f.configPath('A'),'old bytes');
+    f.files.set('/profiles/A/config_script_backup.yaml','old baseline');
+    const helper = load('proxy_core/src/main/ets/profile/ProfileBackup.ets', {
+      '../Profile': {Profile:old.constructor,ProfileType:{File:0,Url:1,External:2}}
+    });
+    const vm = viewModelFixture({profileClass:old.constructor,profileBackup:helper});
+    vm.service.context = old.context;
+    let row = old, downloads = 0;
+    vm.service.profileRepo.query = async () => row;
+    vm.service.profileRepo.addOrUpdate = async p => {
+      assert.equal(f.files.get(f.configPath('A')),scenario==='unchanged'?'old bytes':'new bytes');
+      if(scenario==='database')throw Error('DB write failure');
+      row=p;return 1;
+    };
+    vm.service.socketProxy.downloadConfig = async (url, _, path) => {
+      downloads++;assert.equal(url,'https://new.invalid/sub');
+      if(scenario==='download')throw Error('network failure');
+      f.files.set(path,'new bytes');return '{}';
+    };
+    f.network.response.responseCode = 503;
+    vm.service.socketProxy.vailConfig = async () => scenario==='validation'?'invalid YAML':'';
+    const saving = vm.service.addOrUpdateProfileByUrl({configUrl:scenario==='unchanged'?old.url:'https://new.invalid/sub',
+      configName:'edited',isConfigAutoUpdate:false},'A');
+    const ok = ['changed','unchanged'].includes(scenario);
+    if(ok)await saving;else await assert.rejects(saving);
+    assert.equal(row.url,scenario==='changed'?'https://new.invalid/sub':'https://old.invalid/sub');
+    assert.equal(row.name,ok?'edited':'old');
+    assert.equal(row.proxySelected.get('PROXY'),'node');
+    assert.equal(f.files.get(f.configPath('A')),scenario==='changed'?'new bytes':'old bytes');
+    assert.equal(f.files.get('/profiles/A/config_script_backup.yaml'),scenario==='changed'?undefined:'old baseline');
+    assert.equal(downloads,scenario==='unchanged'?0:1);
+    assert.equal(vm.events.length,ok?1:0);f.clean();
+  }
+});
+
+test('Database enumeration failures abort reset and backup, and always close an acquired cursor', async () => {
+  const {ProfileRepo} = load('proxy_core/src/main/ets/ProfileRepo.ets', {
+    '@kit.ArkData':{relationalStore:{RdbPredicates:class{}}}, '@kit.ArkTS':{JSON}
+  });
+  const repo = new ProfileRepo();
+  await assert.rejects(repo.queryAll(),/尚未初始化/);
+  let deletes=0, closes=0, exports=0;
+  repo.store={query:async()=>{throw Error('database read failure');},delete:async()=>{deletes++;}};
+  await assert.rejects(repo.ClearAll({}),/database read failure/);
+  assert.equal(deletes,0);
+  const messages=[];
+  const backup=load('entry/src/main/ets/common/utils/BackupRestoreUtil.ets',{
+    'proxy_core/src/main/ets/profile/ProfileBackup':{backupProfile:p=>p},
+    '../../entryability/ClashViewModel':{default:{getProfiles:()=>repo.queryAll()}},
+    'xb_components':{Xb_PreferenceUtil:{get:async()=> '[]'},Xb_FileUtils:{exportDataByFile:async()=>{exports++;return '/backup.json';}},
+      Xb_ToastUtil:{showToast:m=>messages.push(m.message)}}
+  },{AppStorage:{get:()=>({})},$r:k=>k}).default;
+  assert.equal(await backup.backup(),'');assert.equal(exports,0);assert.equal(messages.length,1);
+  repo.store.query=async()=>({goToNextRow:()=>true,close:()=>{closes++;}});
+  repo.getFromCursor=()=>{throw Error('mapping failure');};
+  await assert.rejects(repo.queryAll(),/mapping failure/);assert.equal(closes,1);
+  repo.store.query=async()=>({goToNextRow:()=>false,close:()=>{closes++;}});
+  assert.equal((await repo.queryAll()).length,0);assert.equal(closes,2);
+});
+
+function webdavXmlFixture() {
+  const EventType={START_DOCUMENT:0,START_TAG:1,TEXT:2,END_TAG:3,END_DOCUMENT:4};
+  class XmlPullParser {
+    constructor(bytes){this.source=new TextDecoder().decode(bytes);}
+    parseXml({tokenValueCallbackFunction:cb}) {
+      const namespaces=new Map([...this.source.matchAll(/xmlns(?::([^=\s]+))?="([^"]+)"/g)].map(m=>[m[1]??'',m[2]]));
+      cb(EventType.START_DOCUMENT,{});
+      for(const token of this.source.match(/<[^>]+>|[^<]+/g)) {
+        if(token.startsWith('</'))cb(EventType.END_TAG,{});
+        else if(token.startsWith('<')) {
+          const name=token.slice(1).split(/[\s/>]/)[0];
+          cb(EventType.START_TAG,{getName:()=>name,getNamespace:()=>namespaces.get(name.includes(':')?name.split(':')[0]:'')??''});
+          if(token.endsWith('/>'))cb(EventType.END_TAG,{});
+        } else cb(EventType.TEXT,{getText:()=>token});
+      }
+      cb(EventType.END_DOCUMENT,{});
+    }
+  }
+  return {XmlPullParser,EventType};
+}
+
+test('WebDAV listing accepts DAV namespace aliases and default namespace, excluding root and foreign responses', async () => {
+  const {WebDavManager}=load('entry/src/main/ets/common/utils/webdav/manager.ts',{
+    '@kit.ArkTS':{util,xml:webdavXmlFixture()}, './logger':{WebDavLogger:{getInstance:()=>quiet}}
+  });
+  for(const prefix of ['d:','D:','x:','']) {
+    const xmlns=prefix?`xmlns:${prefix.slice(0,-1)}`:'xmlns';
+    const entry=(name,folder=false)=>`<${prefix}response><${prefix}href>/dav/ClashBox/${name}</${prefix}href><${prefix}propstat><${prefix}prop><${prefix}displayname>${name}</${prefix}displayname><${prefix}resourcetype>${folder?`<${prefix}collection/>`:''}</${prefix}resourcetype></${prefix}prop></${prefix}propstat></${prefix}response>`;
+    const foreign='<bad:response><bad:href>/bad</bad:href></bad:response>';
+    const data=`<${prefix}multistatus ${xmlns}="DAV:" xmlns:bad="urn:foreign">${foreign}${entry('',true)}${entry('a.json')}${entry('folder/',true)}</${prefix}multistatus>`;
+    const manager=new WebDavManager({propfind:async()=>({statusCode:207,data}),buildUrl:()=> 'https://example.invalid/dav/ClashBox'},{});
+    const files=await manager.listDirectory('/ClashBox');
+    assert.equal(files.length,2);assert.equal(files[0].name,'a.json');assert.equal(files[0].isDirectory,false);
+    assert.equal(files[1].isDirectory,true);
+  }
+});
+
+test('WebDAV uploads complete UTF-8 bytes across short reads and rejects EOF/read errors before PUT', async () => {
+  for(const scenario of ['short','large','eof','error','empty']) {
+    const source=Buffer.from(scenario==='empty'?'':JSON.stringify({name:'备份节点'.repeat(scenario==='large'?10000:1)}));
+    let closes=0, calls=0, puts=0, uploaded, position=0;
+    const {WebDavManager}=load('entry/src/main/ets/common/utils/webdav/manager.ts',{
+      '@kit.ArkTS':{util},
+      '@kit.CoreFileKit':{fileUri:{FileUri:class{constructor(p){this.path=p;}}},fileIo:{OpenMode:{READ_ONLY:0},
+        openSync:uri=>({fd:3,path:uri}),statSync:fd=>{assert.equal(fd,3);return {size:source.length};},closeSync:()=>{closes++;},
+        read:async(_,out,{offset=0,length})=>{
+          calls++;
+          if(calls===2&&scenario==='error')throw Error('read failed');
+          if(calls===2&&scenario==='eof')return 0;
+          position+=offset;
+          const n=Math.min(scenario==='large'?4096:3,length,source.length-position);
+          new Uint8Array(out).set(source.subarray(position,position+n));position+=n;return n;
+        }}}, './logger':{WebDavLogger:{getInstance:()=>quiet}}
+    });
+    const manager=new WebDavManager({put:async(_,bytes)=>{puts++;uploaded=Buffer.from(bytes);return {statusCode:201};}},{});
+    const work=manager.upload('/ClashBox/','/cache/backup.json');
+    if(['short','large','empty'].includes(scenario)) {
+      assert.equal((await work).statusCode,201);assert.deepEqual(uploaded,source);assert.equal(puts,1);
+    } else {await assert.rejects(work);assert.equal(puts,0);}
+    assert.equal(closes,1);
+  }
+});
+
 test('WebDAV concurrent uploads, downloads and connection tests own sessions and close them exactly once', async () => {
   const sessions = [];
   const { WebDavClient } = load('entry/src/main/ets/common/utils/webdav/client.ts', {

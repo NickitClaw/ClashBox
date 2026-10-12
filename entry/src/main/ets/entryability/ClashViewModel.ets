@@ -2,7 +2,7 @@ import { VpnPhase, VpnSnapshot } from 'proxy_core/src/main/ets/rpc/RpcContract.g
 import { initialVpnState } from 'proxy_core/src/main/ets/rpc/VpnLifecycleState';
 import { ConfigActivationService, ConfigActivationHost, ConfigSnapshot } from '../common/services/ConfigActivationService';
 import { ProfileStorage } from 'proxy_core/src/main/ets/profile/ProfileStorage';
-import { ProfileBackup, restoreProfileMetadata } from 'proxy_core/src/main/ets/profile/ProfileBackup';
+import { ProfileBackup, backupProfile, restoreProfileMetadata } from 'proxy_core/src/main/ets/profile/ProfileBackup';
 import { restoreProfilesAtomically } from 'proxy_core/src/main/ets/profile/ProfileRestore';
 import { assertNativeCompatibility } from 'proxy_core/src/main/ets/rpc/NativeCompatibility';
 import { ProfileRepo } from "proxy_core/src/main/ets/ProfileRepo";
@@ -135,10 +135,13 @@ export class ClashViewModel {
   private async addOrUpdateProfileByUrlInternal(data: ConfigData, id: string | null): Promise<void> {
     const ua = AppStorage.get<ClashConfig>("clashConfig")?.["global-ua"]
     let profile = new Profile(ProfileType.Url, data.configUrl)
+    let urlChanged = false;
     if(id) {
       const old = await this.profileRepo.query(id)
       if (!old) throw new Error('配置不存在或已被删除');
-      profile = old
+      urlChanged = old.url !== data.configUrl;
+      // Editing metadata must not mutate the last committed profile on failure.
+      profile = restoreProfileMetadata(backupProfile(old));
     }
     profile.loadContext(this.context, ua)
     profile.url = data.configUrl
@@ -150,15 +153,14 @@ export class ClashViewModel {
       data.configAutoUpdateTimeGapValue ?? 10,
       data.configAutoUpdateTimeGapTextPickerIndex
     )
-    await profile.checkAndUpdate( this.socketProxy)
-    const isExists = await profile.check();
-    let value: number
-    if (isExists) { // 本地文件存在
-      value = await this.profileRepo.addOrUpdate(profile)
+    let value: number = -1;
+    if (urlChanged || !await profile.check()) {
+      await profile.update(this.socketProxy, profile.customRules, [], async (updated: Profile) => {
+        if (data.configName) updated.name = data.configName;
+        value = await this.profileRepo.addOrUpdate(updated);
+      });
     } else {
-      value = -1
-      console.error("ClashBox文件保存失败");
-      Xb_ToastUtil.showToast({message: "文件保存失败！"})
+      value = await this.profileRepo.addOrUpdate(profile);
     }
     EventHub.sendEvent(EventKey.FetchProfile, null)
     console.info("EditConfig&UpdateConfig&ConfigSort configSaveTestTag", `文件名${profile.name} URL: ${profile.url} 保存结果: ${value}`)

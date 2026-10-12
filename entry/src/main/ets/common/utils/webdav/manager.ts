@@ -1,6 +1,6 @@
 import { BusinessError } from '@kit.BasicServicesKit';
 import { xml, util, buffer } from '@kit.ArkTS';
-import { fileUri, picker, ReadOptions } from '@kit.CoreFileKit'
+import { fileUri, picker } from '@kit.CoreFileKit'
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { Context } from '@kit.AbilityKit';
 import { WebDavClient } from './client';
@@ -198,13 +198,8 @@ export class WebDavManager {
         return [];
       }
 
-      let multistatus = WebDavManager.safeGetObject(parsedData, ['multistatus']);
-      let responsesData = multistatus ? (multistatus['d:response'] || multistatus['D:response']) : undefined;
-
-      if (!responsesData) {
-        this.logger.warn('WebDavManager.listDirectory', '未找到 multistatus 节点，尝试从根节点查找 response', { path });
-        responsesData = (parsedData['d:response'] || parsedData['D:response']);
-      }
+      const multistatus = WebDavManager.safeGetObject(parsedData, ['multistatus']);
+      const responsesData = WebDavManager.safeGetObject(multistatus ?? parsedData, ['response']);
 
       if (!responsesData) {
         this.logger.error('WebDavManager.listDirectory', '无法在 XML 中找到任何 response 节点', {
@@ -228,9 +223,9 @@ export class WebDavManager {
         if (!href) continue;
 
         // 过滤逻辑：规范化路径后再比较，兼容有无斜杠的情况
-        const normalizedHref = href.endsWith('/') ? href.slice(0, -1) : href;
+        const normalizedHref = WebDavManager.normalizePath(href);
         const builtUrl = this.webdavClient.buildUrl(path);
-        const normalizedBuiltUrl = builtUrl.endsWith('/') ? builtUrl.slice(0, -1) : builtUrl;
+        const normalizedBuiltUrl = WebDavManager.normalizePath(builtUrl);
 
         if (normalizedHref === normalizedBuiltUrl) {
           this.logger.debug('WebDavManager.listDirectory', `过滤掉目录本身: ${href}`, {
@@ -249,8 +244,8 @@ export class WebDavManager {
         const contentLengthStr = WebDavManager.safeGetString(props, ['getcontentlength']);
         const lastModified = WebDavManager.safeGetString(props, ['getlastmodified']);
 
-        const resourceTypeData = WebDavManager.safeGetString(props, ['resourcetype']);
-        const isDirectory = resourceTypeData && (resourceTypeData.includes('d:collection') || resourceTypeData.includes('D:collection') || resourceTypeData.includes('<collection'));
+        const resourceTypeData = WebDavManager.safeGetObject(props, ['resourcetype']);
+        const isDirectory = WebDavManager.safeGetObject(resourceTypeData, ['collection']) !== null;
 
         // 如果 displayName 为空，则从 href 中提取文件名
         const finalName = displayName || WebDavManager.extractNameFromHref(href);
@@ -303,33 +298,22 @@ export class WebDavManager {
     // 打开文件并获取大小
     const file = fs.openSync(uri, fs.OpenMode.READ_ONLY);
     try {
-      const stats = fs.statSync(file.path);
+      const stats = fs.statSync(file.fd);
       const fileSize = stats.size;
       this.logger.info('WebDavManager.upload', '文件大小', { fileSize });
       const arrayBuffer = new ArrayBuffer(fileSize);
 
-      // 将 fs.read 包装在 Promise 中，并 await
-      const readLen = await new Promise<number>((resolve, reject) => {
-        const readOptions: ReadOptions = {
-          offset: 0,
-          length: fileSize
-        };
-        fs.read(file.fd, arrayBuffer, readOptions, (err: BusinessError, readLen: number) => {
-          if (err) {
-            this.logger.error('WebDavManager.upload', '读取文件失败', {
-              error: err.message,
-              code: err.code
-            });
-            reject(new Error(`文件读取失败: ${err.message}`));
-          } else {
-            this.logger.info('WebDavManager.upload', '读取文件数据成功', {
-              readLen,
-              fileSize
-            });
-            resolve(readLen);
-          }
-        });
-      });
+      const bytes = new Uint8Array(arrayBuffer);
+      let offset = 0;
+      while (offset < fileSize) {
+        const chunk = new ArrayBuffer(Math.min(fileSize - offset, 65536));
+        // HarmonyOS offset is relative to the current file pointer. Let read()
+        // advance it; adding our output offset would skip data after a short read.
+        const readLen = await fs.read(file.fd, chunk, { length: chunk.byteLength });
+        if (readLen <= 0 || readLen > chunk.byteLength) throw new Error('备份文件读取不完整，已取消上传');
+        bytes.set(new Uint8Array(chunk, 0, readLen), offset);
+        offset += readLen;
+      }
 
       // 准备上传
       const originalName = uri.slice(uri.lastIndexOf('/') + 1);
@@ -752,9 +736,16 @@ export class WebDavManager {
       switch (eventType) {
         case xml.EventType.START_DOCUMENT:
           result = {};
+          current = result;
+          stack.length = 0;
           break;
         case xml.EventType.START_TAG:
-          const tagName = parseInfo.getName();
+          const rawName = parseInfo.getName();
+          const localName = rawName.substring(rawName.lastIndexOf(':') + 1);
+          const namespace = parseInfo.getNamespace();
+          // Canonical DAV keys are independent of the server's chosen prefix.
+          // Keep foreign namespaces distinct, even when their local names match.
+          const tagName = namespace === 'DAV:' || namespace === '' ? localName : `{${namespace}}${localName}`;
           const element: Record<string, Object> = {};
           if (current) {
             if (!current[tagName]) {
@@ -792,12 +783,17 @@ export class WebDavManager {
 
     const options: xml.ParseOptions = {
       supportDoctype: true,
-      ignoreNameSpace: true,
+      ignoreNameSpace: false,
       tokenValueCallbackFunction
     };
 
     xmlParser.parseXml(options);
     return result;
+  }
+
+  private static normalizePath(value: string): string {
+    const path = value.replace(/^https?:\/\/[^/]+/i, '').split(/[?#]/)[0].replace(/\/+$/, '');
+    try { return decodeURI(path); } catch (_) { return path; }
   }
 
   /**
