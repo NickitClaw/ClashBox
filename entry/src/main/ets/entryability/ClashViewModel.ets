@@ -120,14 +120,25 @@ export class ClashViewModel {
     }
     this.vpnObserver = null
   }
+  private profileResetting: boolean = false;
+
+  private async writeProfiles(work: () => Promise<void>): Promise<void> {
+    if (this.profileResetting) throw new Error('正在清理配置，请稍后重试');
+    await this.activation.exclusive(work);
+  }
+
   // 添加配置 url
-  async addOrUpdateProfileByUrl(data: ConfigData, id: string | null) {
+  async addOrUpdateProfileByUrl(data: ConfigData, id: string | null): Promise<void> {
+    await this.writeProfiles(() => this.addOrUpdateProfileByUrlInternal(data, id));
+  }
+
+  private async addOrUpdateProfileByUrlInternal(data: ConfigData, id: string | null): Promise<void> {
     const ua = AppStorage.get<ClashConfig>("clashConfig")?.["global-ua"]
     let profile = new Profile(ProfileType.Url, data.configUrl)
     if(id) {
       const old = await this.profileRepo.query(id)
-      if(old)
-        profile = old
+      if (!old) throw new Error('配置不存在或已被删除');
+      profile = old
     }
     profile.loadContext(this.context, ua)
     profile.url = data.configUrl
@@ -154,13 +165,16 @@ export class ClashViewModel {
   }
 
   // 批量插入配置
-  async addOrUpdateProfiles(data: ProfileBackup[]) {
+  async addOrUpdateProfiles(data: ProfileBackup[], publishSettings?: () => Promise<void>,
+    rollbackSettings?: () => Promise<void>) {
+    if (this.profileResetting) throw new Error('正在清理配置，请稍后重试');
     await this.queueVpnOperation(async () => {
-      await this.activation.exclusive(() => this.restoreProfiles(data));
+      await this.activation.exclusive(() => this.restoreProfiles(data, publishSettings, rollbackSettings));
     });
   }
 
-  private async restoreProfiles(data: ProfileBackup[]): Promise<void> {
+  private async restoreProfiles(data: ProfileBackup[], publishSettings?: () => Promise<void>,
+    rollbackSettings?: () => Promise<void>): Promise<void> {
     const profiles = data.map((item: ProfileBackup) => restoreProfileMetadata(item));
     const ids = new Set<string>();
     for (const profile of profiles) {
@@ -198,17 +212,31 @@ export class ClashViewModel {
       if (!await this.socketProxy.stopClash()) throw new Error('内核未确认 VPN 停止');
       await this.refreshVpnState();
       this.activation.forget();
-      await this.profileRepo.restoreBatch(restored, replaceFiles);
+      let settingsTouched = false;
+      try {
+        await this.profileRepo.restoreBatch(restored, async () => {
+          await replaceFiles();
+          settingsTouched = true;
+          await publishSettings?.();
+        });
+      } catch (e) {
+        if (settingsTouched) await rollbackSettings?.();
+        throw e as Error;
+      }
     });
     EventHub.sendEvent(EventKey.FetchProfile, null)
   }
 
-  async addOrUpdateProfileByFile(name: string, path: string, id: string | null) {
+  async addOrUpdateProfileByFile(name: string, path: string, id: string | null): Promise<void> {
+    await this.writeProfiles(() => this.addOrUpdateProfileByFileInternal(name, path, id));
+  }
+
+  private async addOrUpdateProfileByFileInternal(name: string, path: string, id: string | null): Promise<void> {
     let profile = new Profile(ProfileType.File, path)
     if (id) {
       const old = await this.profileRepo.query(id)
-      if (old)
-        profile = old
+      if (!old) throw new Error('配置不存在或已被删除');
+      profile = old
     }
     profile.loadContext(this.context)
     profile.name = name // decodeURIComponent(path.substring(path.lastIndexOf('/') + 1))
@@ -228,6 +256,10 @@ export class ClashViewModel {
   }
 
   async saveProfileContent(id: string, content: string, expectedContent: string): Promise<void> {
+    await this.writeProfiles(() => this.saveProfileContentInternal(id, content, expectedContent));
+  }
+
+  private async saveProfileContentInternal(id: string, content: string, expectedContent: string): Promise<void> {
     const profile = await this.getProfile(id);
     if (!profile) throw new Error('配置已被删除，请返回配置列表');
     profile.loadContext(this.context);
@@ -246,6 +278,10 @@ export class ClashViewModel {
   }
 
   async updateProfileConfig(id: string | null, notify: boolean = true): Promise<void> {
+    await this.writeProfiles(() => this.updateProfileConfigInternal(id, notify));
+  }
+
+  private async updateProfileConfigInternal(id: string | null, notify: boolean): Promise<void> {
     const ua = AppStorage.get<ClashConfig>("clashConfig")?.["global-ua"]
     if (id) {
       const profile = await this.getProfile(id)
@@ -442,7 +478,10 @@ export class ClashViewModel {
   }
 
   async updateProfile(profile: Profile){
-    await this.profileRepo.addOrUpdate(profile)
+    await this.writeProfiles(async () => {
+      if (!await this.getProfile(profile.id)) throw new Error('配置不存在或已被删除');
+      await this.profileRepo.addOrUpdate(profile);
+    });
   }
   async updateCurrentGroup(id: string, name: string): Promise<void> {
     await this.activation.exclusive(async () => {
@@ -452,16 +491,22 @@ export class ClashViewModel {
   }
 
   async resetProfiles(resetSettings: () => Promise<void>): Promise<void> {
+    if (this.profileResetting) throw new Error('正在清理配置，请稍后重试');
+    this.profileResetting = true;
     this.desiredRunning = false;
     ++this.intentGeneration;
-    await this.queueVpnOperation(async () => {
-      await this.activation.reset(async () => {
-        await this.profileRepo.ClearAll(this.context!);
-        this.proxyGroups = [];
-        await resetSettings();
-        cardManager.setAppConfig(AppStorage.get<AppConfig>('appConfig') || new AppConfig());
+    try {
+      await this.queueVpnOperation(async () => {
+        await this.activation.reset(async () => {
+          await this.profileRepo.ClearAll(this.context!);
+          this.proxyGroups = [];
+          await resetSettings();
+          cardManager.setAppConfig(AppStorage.get<AppConfig>('appConfig') || new AppConfig());
+        });
       });
-    });
+    } finally {
+      this.profileResetting = false;
+    }
   }
   async getProfiles(): Promise<Profile[]>{
     return await this.profileRepo.queryAll()

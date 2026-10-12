@@ -540,11 +540,15 @@ func handleGetExternalProviders() string {
 	return string(data)
 }
 
-func handleGetExternalProvider(externalProviderName string) string {
+func handleGetExternalProvider(externalProviderName string, providerType ...string) string {
 	runLock.Lock()
 	defer runLock.Unlock()
-	externalProvider, exist := getExternalProvidersRaw()[externalProviderName]
-	if !exist {
+	kind := ""
+	if len(providerType) > 0 {
+		kind = providerType[0]
+	}
+	externalProvider, err := resolveExternalProvider(externalProviderName, []string{"", kind})
+	if err != nil {
 		return ""
 	}
 	e, err := toExternalProvider(externalProvider)
@@ -601,8 +605,20 @@ func handleUpdateGeoData(geoType string, geoName string, fn func(value string)) 
 
 // Caller holds runLock. Provider paths are scoped to the active profile.
 func resolveExternalProvider(name string, expectedPath []string) (cp.Provider, error) {
-	provider, exists := getExternalProvidersRaw()[name]
-	if !exists {
+	kind := ""
+	if len(expectedPath) > 1 {
+		kind = expectedPath[1]
+	}
+	var provider cp.Provider
+	for key, candidate := range getExternalProvidersRaw() {
+		if key.name == name && (kind == "" || key.kind == kind) {
+			if provider != nil {
+				return nil, fmt.Errorf("提供者名称重复，请指定 Proxy 或 Rule 类型")
+			}
+			provider = candidate
+		}
+	}
+	if provider == nil {
 		return nil, fmt.Errorf("external provider is not exist")
 	}
 	if len(expectedPath) > 0 && expectedPath[0] != "" {
@@ -626,7 +642,7 @@ func handleUpdateExternalProvider(providerName string, fn func(value string), ex
 		// Network I/O must not block stop, latency tests or configuration changes.
 		err = externalProvider.Update()
 		runLock.Lock()
-		if getExternalProvidersRaw()[providerName] != externalProvider {
+		if getExternalProvidersRaw()[providerKey{externalProvider.Type().String(), providerName}] != externalProvider {
 			err = fmt.Errorf("配置已切换，请刷新提供者列表")
 		}
 		runLock.Unlock()

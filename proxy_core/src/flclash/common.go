@@ -103,16 +103,21 @@ func parseProfileConfig(id string, bytes []byte) (*config.RawConfig, error) {
 	return prof, nil
 }
 
-func getExternalProvidersRaw() map[string]cp.Provider {
-	eps := make(map[string]cp.Provider)
+type providerKey struct {
+	kind string
+	name string
+}
+
+func getExternalProvidersRaw() map[providerKey]cp.Provider {
+	eps := make(map[providerKey]cp.Provider)
 	for n, p := range tunnel.Providers() {
 		if p.VehicleType() != cp.Compatible {
-			eps[n] = p
+			eps[providerKey{p.Type().String(), n}] = p
 		}
 	}
 	for n, p := range tunnel.RuleProviders() {
 		if p.VehicleType() != cp.Compatible {
-			eps[n] = p
+			eps[providerKey{p.Type().String(), n}] = p
 		}
 	}
 	return eps
@@ -258,7 +263,7 @@ func patchConfig() {
 	adapter.UnifiedDelay.Store(general.UnifiedDelay)
 	tunnel.SetMode(general.Mode)
 	log.SetLevel(general.LogLevel)
-	resolver.DisableIPv6 = !general.IPv6
+	resolver.DisableIPv6.Store(!general.IPv6)
 	geodata.SetGeoIpUrl(general.GeoXUrl.GeoIp)
 	geodata.SetGeoSiteUrl(general.GeoXUrl.GeoSite)
 	geodata.SetMmdbUrl(general.GeoXUrl.Mmdb)

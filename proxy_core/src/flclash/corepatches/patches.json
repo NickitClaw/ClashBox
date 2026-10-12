@@ -182,5 +182,975 @@
     "file": "component/resource/vehicle.go",
     "before": "if etag {",
     "after": "if ETag() {"
+  },
+  {
+    "file": "adapter/outboundgroup/urltest.go",
+    "before": "func (u *URLTest) Now() string {",
+    "after": "func (u *URLTest) FixedSelection() string { return u.selected }\n\nfunc (u *URLTest) Now() string {"
+  },
+  {
+    "file": "adapter/outboundgroup/fallback.go",
+    "before": "func (f *Fallback) Now() string {",
+    "after": "func (f *Fallback) FixedSelection() string { return f.selected }\n\nfunc (f *Fallback) Now() string {"
+  },
+  {
+    "file": "rules/provider/provider.go",
+    "before": "import (",
+    "after": "import (\n \"github.com/metacubex/mihomo/common/atomic\""
+  },
+  {
+    "file": "rules/provider/provider.go",
+    "before": "var tunnel P.Tunnel",
+    "after": "var tunnel atomic.TypedValue[P.Tunnel]"
+  },
+  {
+    "file": "rules/provider/provider.go",
+    "before": "tunnel = t",
+    "after": "tunnel.Store(t)"
+  },
+  {
+    "file": "rules/provider/provider.go",
+    "before": "tunnel.RuleUpdateCallback()",
+    "after": "tunnel.Load().RuleUpdateCallback()"
+  },
+  {
+    "file": "rules/provider/rule_set.go",
+    "before": "tunnel.RuleProviders()",
+    "after": "tunnel.Load().RuleProviders()"
+  },
+  {
+    "file": "component/http/http.go",
+    "before": "import (",
+    "after": "import (\n \"github.com/metacubex/mihomo/common/atomic\""
+  },
+  {
+    "file": "component/http/http.go",
+    "before": "ua string",
+    "after": "ua atomic.TypedValue[string]"
+  },
+  {
+    "file": "component/http/http.go",
+    "before": "return ua",
+    "after": "return ua.Load()"
+  },
+  {
+    "file": "component/http/http.go",
+    "before": "ua = UA",
+    "after": "ua.Store(UA)"
+  },
+  {
+    "file": "tunnel/tunnel.go",
+    "before": "mode = Rule",
+    "after": "mode = atomic.NewInt32Enum(Rule)"
+  },
+  {
+    "file": "tunnel/tunnel.go",
+    "before": "return mode",
+    "after": "return mode.Load()"
+  },
+  {
+    "file": "tunnel/tunnel.go",
+    "before": "mode = m",
+    "after": "mode.Store(m)"
+  },
+  {
+    "file": "tunnel/tunnel.go",
+    "before": "switch mode {",
+    "after": "switch Mode() {"
+  },
+  {
+    "file": "tunnel/tunnel.go",
+    "before": "case mode == Global:",
+    "after": "case Mode() == Global:"
+  },
+  {
+    "file": "tunnel/tunnel.go",
+    "before": "case mode == Direct:",
+    "after": "case Mode() == Direct:"
+  },
+  {
+    "file": "component/resolver/ip4p.go",
+    "before": "import (",
+    "after": "import (\n \"github.com/metacubex/mihomo/common/atomic\""
+  },
+  {
+    "file": "component/resolver/ip4p.go",
+    "before": "ip4PEnable bool",
+    "after": "ip4PEnable atomic.Bool"
+  },
+  {
+    "file": "component/resolver/ip4p.go",
+    "before": "return ip4PEnable",
+    "after": "return ip4PEnable.Load()"
+  },
+  {
+    "file": "component/resolver/ip4p.go",
+    "before": "ip4PEnable = enableIP4PConvert",
+    "after": "ip4PEnable.Store(enableIP4PConvert)"
+  },
+  {
+    "file": "component/resolver/ip4p.go",
+    "before": "if ip4PEnable {",
+    "after": "if ip4PEnable.Load() {"
+  },
+  {
+    "file": "component/resolver/resolver.go",
+    "before": "import (",
+    "after": "import (\n \"github.com/metacubex/mihomo/common/atomic\""
+  },
+  {
+    "file": "component/resolver/resolver.go",
+    "before": "DisableIPv6 = true",
+    "after": "DisableIPv6 = atomic.NewBool(true)"
+  },
+  {
+    "file": "component/resolver/resolver.go",
+    "before": "func LookupIPv6WithResolver(ctx context.Context, host string, r Resolver) ([]netip.Addr, error) {\n\tif DisableIPv6 {\n\t\treturn nil, ErrIPv6Disabled",
+    "after": "func LookupIPv6WithResolver(ctx context.Context, host string, r Resolver) ([]netip.Addr, error) {\n\tif DisableIPv6.Load() {\n\t\treturn nil, ErrIPv6Disabled"
+  },
+  {
+    "file": "component/resolver/resolver.go",
+    "before": "\t\tif DisableIPv6 {",
+    "after": "\t\tif DisableIPv6.Load() {"
+  },
+  {
+    "file": "component/resolver/resolver.go",
+    "before": "\t} else if DisableIPv6 {",
+    "after": "\t} else if DisableIPv6.Load() {"
+  },
+  {
+    "file": "hub/executor/executor.go",
+    "before": "!resolver.DisableIPv6,",
+    "after": "!resolver.DisableIPv6.Load(),"
+  },
+  {
+    "file": "hub/executor/executor.go",
+    "before": "resolver.DisableIPv6 = !general.IPv6",
+    "after": "resolver.DisableIPv6.Store(!general.IPv6)"
+  },
+  {
+    "file": "hub/route/configs.go",
+    "before": "resolver.DisableIPv6 = !*general.IPv6",
+    "after": "resolver.DisableIPv6.Store(!*general.IPv6)"
+  },
+  {
+    "file": "component/geodata/init.go",
+    "before": "geoIpUrl   string",
+    "after": "geoIpUrl atomic.TypedValue[string]"
+  },
+  {
+    "file": "component/geodata/init.go",
+    "before": "return geoIpUrl",
+    "after": "return geoIpUrl.Load()"
+  },
+  {
+    "file": "component/geodata/init.go",
+    "before": "geoIpUrl = url",
+    "after": "geoIpUrl.Store(url)"
+  },
+  {
+    "file": "component/geodata/init.go",
+    "before": "mmdbUrl    string",
+    "after": "mmdbUrl atomic.TypedValue[string]"
+  },
+  {
+    "file": "component/geodata/init.go",
+    "before": "return mmdbUrl",
+    "after": "return mmdbUrl.Load()"
+  },
+  {
+    "file": "component/geodata/init.go",
+    "before": "mmdbUrl = url",
+    "after": "mmdbUrl.Store(url)"
+  },
+  {
+    "file": "component/geodata/init.go",
+    "before": "geoSiteUrl string",
+    "after": "geoSiteUrl atomic.TypedValue[string]"
+  },
+  {
+    "file": "component/geodata/init.go",
+    "before": "return geoSiteUrl",
+    "after": "return geoSiteUrl.Load()"
+  },
+  {
+    "file": "component/geodata/init.go",
+    "before": "geoSiteUrl = url",
+    "after": "geoSiteUrl.Store(url)"
+  },
+  {
+    "file": "component/geodata/init.go",
+    "before": "asnUrl     string",
+    "after": "asnUrl atomic.TypedValue[string]"
+  },
+  {
+    "file": "component/geodata/init.go",
+    "before": "return asnUrl",
+    "after": "return asnUrl.Load()"
+  },
+  {
+    "file": "component/geodata/init.go",
+    "before": "asnUrl = url",
+    "after": "asnUrl.Store(url)"
+  },
+  {
+    "file": "component/geodata/utils.go",
+    "before": "import (",
+    "after": "import (\n \"github.com/metacubex/mihomo/common/atomic\""
+  },
+  {
+    "file": "component/geodata/utils.go",
+    "before": "geoMode        bool",
+    "after": "geoMode atomic.Bool"
+  },
+  {
+    "file": "component/geodata/utils.go",
+    "before": "geoLoaderName  = \"memconservative\"",
+    "after": "geoLoaderName = atomic.NewTypedValue(\"memconservative\")"
+  },
+  {
+    "file": "component/geodata/utils.go",
+    "before": "\tgeoSiteMatcher = \"succinct\"\n)",
+    "after": "\tgeoSiteMatcher = atomic.NewTypedValue(\"succinct\")\n)"
+  },
+  {
+    "file": "component/geodata/utils.go",
+    "before": "return geoMode",
+    "after": "return geoMode.Load()"
+  },
+  {
+    "file": "component/geodata/utils.go",
+    "before": "return geoLoaderName",
+    "after": "return geoLoaderName.Load()"
+  },
+  {
+    "file": "component/geodata/utils.go",
+    "before": "return geoSiteMatcher",
+    "after": "return geoSiteMatcher.Load()"
+  },
+  {
+    "file": "component/geodata/utils.go",
+    "before": "geoMode = newGeodataMode",
+    "after": "geoMode.Store(newGeodataMode)"
+  },
+  {
+    "file": "component/geodata/utils.go",
+    "before": "geoLoaderName = newLoader",
+    "after": "geoLoaderName.Store(newLoader)"
+  },
+  {
+    "file": "component/geodata/utils.go",
+    "before": "geoSiteMatcher = \"mph\"",
+    "after": "geoSiteMatcher.Store(\"mph\")"
+  },
+  {
+    "file": "component/geodata/utils.go",
+    "before": "geoSiteMatcher = \"succinct\"",
+    "after": "geoSiteMatcher.Store(\"succinct\")"
+  },
+  {
+    "file": "component/geodata/utils.go",
+    "before": "\t\t\tgeoLoader, err := GetGeoDataLoader(geoLoaderName)",
+    "after": "\t\t\tgeoLoader, err := GetGeoDataLoader(geoLoaderName.Load())"
+  },
+  {
+    "file": "component/geodata/utils.go",
+    "before": "\t\tgeoLoader, err := GetGeoDataLoader(geoLoaderName)",
+    "after": "\t\tgeoLoader, err := GetGeoDataLoader(geoLoaderName.Load())"
+  },
+  {
+    "file": "component/geodata/utils.go",
+    "before": "if geoSiteMatcher == \"mph\"",
+    "after": "if geoSiteMatcher.Load() == \"mph\""
+  },
+  {
+    "file": "adapter/outboundgroup/urltest.go",
+    "before": "import (",
+    "after": "import (\n \"github.com/metacubex/mihomo/common/atomic\""
+  },
+  {
+    "file": "adapter/outboundgroup/urltest.go",
+    "before": "selected       string",
+    "after": "selected atomic.TypedValue[string]"
+  },
+  {
+    "file": "adapter/outboundgroup/urltest.go",
+    "before": "\tu.selected = name",
+    "after": "\tu.selected.Store(name)"
+  },
+  {
+    "file": "adapter/outboundgroup/urltest.go",
+    "before": "if u.selected != \"\"",
+    "after": "if u.selected.Load() != \"\""
+  },
+  {
+    "file": "adapter/outboundgroup/urltest.go",
+    "before": "proxy.Name() == u.selected",
+    "after": "proxy.Name() == u.selected.Load()"
+  },
+  {
+    "file": "adapter/outboundgroup/urltest.go",
+    "before": "return u.selected }",
+    "after": "return u.selected.Load() }"
+  },
+  {
+    "file": "adapter/outboundgroup/urltest.go",
+    "before": "\"fixed\":          u.selected,",
+    "after": "\"fixed\":          u.selected.Load(),"
+  },
+  {
+    "file": "adapter/outboundgroup/fallback.go",
+    "before": "import (",
+    "after": "import (\n \"github.com/metacubex/mihomo/common/atomic\""
+  },
+  {
+    "file": "adapter/outboundgroup/fallback.go",
+    "before": "selected       string",
+    "after": "selected atomic.TypedValue[string]"
+  },
+  {
+    "file": "adapter/outboundgroup/fallback.go",
+    "before": "\n\tf.selected = name\n\tif !p.AliveForTestUrl(f.testUrl) {",
+    "after": "\n\tf.selected.Store(name)\n\tif !p.AliveForTestUrl(f.testUrl) {"
+  },
+  {
+    "file": "adapter/outboundgroup/fallback.go",
+    "before": "\tf.selected = name",
+    "after": "\tf.selected.Store(name)"
+  },
+  {
+    "file": "adapter/outboundgroup/fallback.go",
+    "before": "f.selected = \"\"",
+    "after": "f.selected.CompareAndSwap(selected, \"\")\n selected = f.selected.Load()"
+  },
+  {
+    "file": "adapter/outboundgroup/fallback.go",
+    "before": "proxies := f.GetProxies(touch)",
+    "after": "proxies := f.GetProxies(touch)\n selected := f.selected.Load()"
+  },
+  {
+    "file": "adapter/outboundgroup/fallback.go",
+    "before": "len(f.selected)",
+    "after": "len(selected)"
+  },
+  {
+    "file": "adapter/outboundgroup/fallback.go",
+    "before": "proxy.Name() == f.selected",
+    "after": "proxy.Name() == selected"
+  },
+  {
+    "file": "adapter/outboundgroup/fallback.go",
+    "before": "return f.selected }",
+    "after": "return f.selected.Load() }"
+  },
+  {
+    "file": "adapter/outboundgroup/fallback.go",
+    "before": "\"fixed\":          f.selected,",
+    "after": "\"fixed\":          f.selected.Load(),"
+  },
+  {
+    "file": "adapter/outboundgroup/selector.go",
+    "before": "import (",
+    "after": "import (\n \"github.com/metacubex/mihomo/common/atomic\""
+  },
+  {
+    "file": "adapter/outboundgroup/selector.go",
+    "before": "selected   string",
+    "after": "selected atomic.TypedValue[string]"
+  },
+  {
+    "file": "adapter/outboundgroup/selector.go",
+    "before": "\t\t\ts.selected = name",
+    "after": "\t\t\ts.selected.Store(name)"
+  },
+  {
+    "file": "adapter/outboundgroup/selector.go",
+    "before": "\ts.selected = name",
+    "after": "\ts.selected.Store(name)"
+  },
+  {
+    "file": "adapter/outboundgroup/selector.go",
+    "before": "selected:   selectorOption.DefaultSelected,",
+    "after": "selected:   atomic.NewTypedValue(selectorOption.DefaultSelected),"
+  },
+  {
+    "file": "adapter/outboundgroup/selector.go",
+    "before": "proxy.Name() == s.selected",
+    "after": "proxy.Name() == s.selected.Load()"
+  },
+  {
+    "file": "tunnel/tunnel.go",
+    "before": "func SetSniffing(b bool) {\n\tif snifferDispatcher.Enable() {\n\t\tconfigMux.Lock()\n\t\tsniffingEnable = b\n\t\tconfigMux.Unlock()\n\t}\n}\n\nfunc IsSniffing() bool {\n\treturn sniffingEnable\n}",
+    "after": "func SetSniffing(b bool) {\n configMux.Lock()\n defer configMux.Unlock()\n if snifferDispatcher != nil && snifferDispatcher.Enable() { sniffingEnable = b }\n}\n\nfunc IsSniffing() bool {\n configMux.RLock()\n defer configMux.RUnlock()\n return sniffingEnable\n}\n\nfunc activeSniffer() *sniffer.Dispatcher {\n configMux.RLock()\n defer configMux.RUnlock()\n if sniffingEnable && snifferDispatcher != nil && snifferDispatcher.Enable() { return snifferDispatcher }\n return nil\n}"
+  },
+  {
+    "file": "tunnel/tunnel.go",
+    "before": "\t\tif sniffingEnable && snifferDispatcher.Enable() {",
+    "after": "\t\tif dispatcher := activeSniffer(); dispatcher != nil {"
+  },
+  {
+    "file": "tunnel/tunnel.go",
+    "before": "\tif sniffingEnable && snifferDispatcher.Enable() {",
+    "after": "\tif dispatcher := activeSniffer(); dispatcher != nil {"
+  },
+  {
+    "file": "tunnel/tunnel.go",
+    "before": "snifferDispatcher.UDPSniff(packet, sender)",
+    "after": "dispatcher.UDPSniff(packet, sender)"
+  },
+  {
+    "file": "tunnel/tunnel.go",
+    "before": "snifferDispatcher.TCPSniff(conn, metadata)",
+    "after": "dispatcher.TCPSniff(conn, metadata)"
+  },
+  {
+    "file": "listener/sing_hysteria2/server.go",
+    "before": "\t\t\t\tif ipv4 && !ipv6 {\n\t\t\t\t\treturn resolver.LookupIPv4WithResolver(ctx, host, resolver.ProxyServerHostResolver)\n\t\t\t\t} else if ipv6 && !ipv4 {",
+    "after": "\t\t\t\tif ipv4 && !ipv6 {\n\t\t\t\t\treturn resolver.LookupIPv4WithResolver(ctx, host, resolver.ProxyServerHostResolver.Load())\n\t\t\t\t} else if ipv6 && !ipv4 {"
+  },
+  {
+    "file": "listener/sing_hysteria2/server.go",
+    "before": "\t\t\t\t} else if ipv6 && !ipv4 {\n\t\t\t\t\treturn resolver.LookupIPv6WithResolver(ctx, host, resolver.ProxyServerHostResolver)\n\t\t\t\t}",
+    "after": "\t\t\t\t} else if ipv6 && !ipv4 {\n\t\t\t\t\treturn resolver.LookupIPv6WithResolver(ctx, host, resolver.ProxyServerHostResolver.Load())\n\t\t\t\t}"
+  },
+  {
+    "file": "listener/sing_hysteria2/server.go",
+    "before": "\t\t\t\t}\n\t\t\t\treturn resolver.LookupIPWithResolver(ctx, host, resolver.ProxyServerHostResolver)\n\t\t\t},",
+    "after": "\t\t\t\t}\n\t\t\t\treturn resolver.LookupIPWithResolver(ctx, host, resolver.ProxyServerHostResolver.Load())\n\t\t\t},"
+  },
+  {
+    "file": "component/easytier/platform.go",
+    "before": "\tcase 4:\n\t\treturn resolver.LookupIPv4WithResolver(ctx, query.Host, resolver.ProxyServerHostResolver)\n\tcase 6:",
+    "after": "\tcase 4:\n\t\treturn resolver.LookupIPv4WithResolver(ctx, query.Host, resolver.ProxyServerHostResolver.Load())\n\tcase 6:"
+  },
+  {
+    "file": "component/easytier/platform.go",
+    "before": "\tcase 6:\n\t\treturn resolver.LookupIPv6WithResolver(ctx, query.Host, resolver.ProxyServerHostResolver)\n\tdefault:",
+    "after": "\tcase 6:\n\t\treturn resolver.LookupIPv6WithResolver(ctx, query.Host, resolver.ProxyServerHostResolver.Load())\n\tdefault:"
+  },
+  {
+    "file": "component/easytier/platform.go",
+    "before": "\tdefault:\n\t\treturn resolver.LookupIPWithResolver(ctx, query.Host, resolver.ProxyServerHostResolver)\n\t}",
+    "after": "\tdefault:\n\t\treturn resolver.LookupIPWithResolver(ctx, query.Host, resolver.ProxyServerHostResolver.Load())\n\t}"
+  },
+  {
+    "file": "component/easytier/platform.go",
+    "before": "func exchangeDNS(ctx context.Context, host string, qtype uint16) (*D.Msg, error) {\n\tr := resolver.ProxyServerHostResolver\n\tif r == nil || !r.Invalid() {",
+    "after": "func exchangeDNS(ctx context.Context, host string, qtype uint16) (*D.Msg, error) {\n\tr := resolver.ProxyServerHostResolver.Load()\n\tif r == nil || !r.Invalid() {"
+  },
+  {
+    "file": "component/easytier/platform.go",
+    "before": "\tif r == nil || !r.Invalid() {\n\t\tr = resolver.SystemResolver\n\t}",
+    "after": "\tif r == nil || !r.Invalid() {\n\t\tr = resolver.SystemResolver.Load()\n\t}"
+  },
+  {
+    "file": "component/dialer/dialer.go",
+    "before": "\tif preferResolver == nil {\n\t\tpreferResolver = resolver.ProxyServerHostResolver\n\t}",
+    "after": "\tif preferResolver == nil {\n\t\tpreferResolver = resolver.ProxyServerHostResolver.Load()\n\t}"
+  },
+  {
+    "file": "adapter/outbound/wireguard.go",
+    "before": "\tif !metadata.Resolved() || w.resolver != nil {\n\t\tr := resolver.DefaultResolver\n\t\tif w.resolver != nil {",
+    "after": "\tif !metadata.Resolved() || w.resolver != nil {\n\t\tr := resolver.DefaultResolver.Load()\n\t\tif w.resolver != nil {"
+  },
+  {
+    "file": "adapter/outbound/wireguard.go",
+    "before": "\tif (!metadata.Resolved() || w.resolver != nil) && metadata.Host != \"\" {\n\t\tr := resolver.DefaultResolver\n\t\tif w.resolver != nil {",
+    "after": "\tif (!metadata.Resolved() || w.resolver != nil) && metadata.Host != \"\" {\n\t\tr := resolver.DefaultResolver.Load()\n\t\tif w.resolver != nil {"
+  },
+  {
+    "file": "adapter/outbound/ech.go",
+    "before": "\t\t\t}\n\t\t\treturn resolver.ResolveECHWithResolver(ctx, serverName, resolver.ProxyServerHostResolver)\n\t\t}",
+    "after": "\t\t\t}\n\t\t\treturn resolver.ResolveECHWithResolver(ctx, serverName, resolver.ProxyServerHostResolver.Load())\n\t\t}"
+  },
+  {
+    "file": "adapter/outbound/masque.go",
+    "before": "\tvar conn net.Conn\n\tif !metadata.Resolved() || w.resolver != nil {\n\t\tr := resolver.DefaultResolver\n\t\tif w.resolver != nil {\n\t\t\tr = w.resolver",
+    "after": "\tvar conn net.Conn\n\tif !metadata.Resolved() || w.resolver != nil {\n\t\tr := resolver.DefaultResolver.Load()\n\t\tif w.resolver != nil {\n\t\t\tr = w.resolver"
+  },
+  {
+    "file": "adapter/outbound/masque.go",
+    "before": "\tif !metadata.Resolved() || w.resolver != nil {\n\t\tr := resolver.DefaultResolver\n\t\tif w.resolver != nil {",
+    "after": "\tif !metadata.Resolved() || w.resolver != nil {\n\t\tr := resolver.DefaultResolver.Load()\n\t\tif w.resolver != nil {"
+  },
+  {
+    "file": "adapter/outbound/masque.go",
+    "before": "\tif (!metadata.Resolved() || w.resolver != nil) && metadata.Host != \"\" {\n\t\tr := resolver.DefaultResolver\n\t\tif w.resolver != nil {",
+    "after": "\tif (!metadata.Resolved() || w.resolver != nil) && metadata.Host != \"\" {\n\t\tr := resolver.DefaultResolver.Load()\n\t\tif w.resolver != nil {"
+  },
+  {
+    "file": "adapter/outbound/openvpn.go",
+    "before": "\tif !metadata.Resolved() || r != nil {\n\t\tif r == nil {\n\t\t\tr = resolver.DefaultResolver\n\t\t}\n\t\toptions := o.DialOptions()",
+    "after": "\tif !metadata.Resolved() || r != nil {\n\t\tif r == nil {\n\t\t\tr = resolver.DefaultResolver.Load()\n\t\t}\n\t\toptions := o.DialOptions()"
+  },
+  {
+    "file": "adapter/outbound/openvpn.go",
+    "before": "\t\tif r == nil {\n\t\t\tr = resolver.DefaultResolver\n\t\t}",
+    "after": "\t\tif r == nil {\n\t\t\tr = resolver.DefaultResolver.Load()\n\t\t}"
+  },
+  {
+    "file": "adapter/outbound/zerotier.go",
+    "before": "\tif !metadata.Resolved() || remoteResolver != nil {\n\t\tr := resolver.DefaultResolver\n\t\tif remoteResolver != nil {",
+    "after": "\tif !metadata.Resolved() || remoteResolver != nil {\n\t\tr := resolver.DefaultResolver.Load()\n\t\tif remoteResolver != nil {"
+  },
+  {
+    "file": "adapter/outbound/zerotier.go",
+    "before": "\tif (!metadata.Resolved() || remoteResolver != nil) && metadata.Host != \"\" {\n\t\tr := resolver.DefaultResolver\n\t\tif remoteResolver != nil {",
+    "after": "\tif (!metadata.Resolved() || remoteResolver != nil) && metadata.Host != \"\" {\n\t\tr := resolver.DefaultResolver.Load()\n\t\tif remoteResolver != nil {"
+  },
+  {
+    "file": "adapter/outbound/hysteria2.go",
+    "before": "\t\t\t\tif ipv4 && !ipv6 {\n\t\t\t\t\treturn resolver.LookupIPv4WithResolver(ctx, host, resolver.ProxyServerHostResolver)\n\t\t\t\t} else if ipv6 && !ipv4 {",
+    "after": "\t\t\t\tif ipv4 && !ipv6 {\n\t\t\t\t\treturn resolver.LookupIPv4WithResolver(ctx, host, resolver.ProxyServerHostResolver.Load())\n\t\t\t\t} else if ipv6 && !ipv4 {"
+  },
+  {
+    "file": "adapter/outbound/hysteria2.go",
+    "before": "\t\t\t\t} else if ipv6 && !ipv4 {\n\t\t\t\t\treturn resolver.LookupIPv6WithResolver(ctx, host, resolver.ProxyServerHostResolver)\n\t\t\t\t}",
+    "after": "\t\t\t\t} else if ipv6 && !ipv4 {\n\t\t\t\t\treturn resolver.LookupIPv6WithResolver(ctx, host, resolver.ProxyServerHostResolver.Load())\n\t\t\t\t}"
+  },
+  {
+    "file": "adapter/outbound/hysteria2.go",
+    "before": "\t\t\t\t}\n\t\t\t\treturn resolver.LookupIPWithResolver(ctx, host, resolver.ProxyServerHostResolver)\n\t\t\t},",
+    "after": "\t\t\t\t}\n\t\t\t\treturn resolver.LookupIPWithResolver(ctx, host, resolver.ProxyServerHostResolver.Load())\n\t\t\t},"
+  },
+  {
+    "file": "adapter/outbound/util.go",
+    "before": "\n\tip, err := resolveIPWithResolver(ctx, host, prefer, resolver.ProxyServerHostResolver)\n",
+    "after": "\n\tip, err := resolveIPWithResolver(ctx, host, prefer, resolver.ProxyServerHostResolver.Load())\n"
+  },
+  {
+    "file": "adapter/outbound/tailscale.go",
+    "before": "\t\t\tlog.Debugln(\"[Tailscale](%s) LookupHook: start lookup %s\", option.Name, host)\n\t\t\tips, err := resolver.LookupIPWithResolver(ctx, host, resolver.ProxyServerHostResolver)\n\t\t\tlog.Debugln(\"[Tailscale](%s) LookupHook: finish lookup %s, ips: %v, err: %v\", option.Name, host, ips, err)",
+    "after": "\t\t\tlog.Debugln(\"[Tailscale](%s) LookupHook: start lookup %s\", option.Name, host)\n\t\t\tips, err := resolver.LookupIPWithResolver(ctx, host, resolver.ProxyServerHostResolver.Load())\n\t\t\tlog.Debugln(\"[Tailscale](%s) LookupHook: finish lookup %s, ips: %v, err: %v\", option.Name, host, ips, err)"
+  },
+  {
+    "file": "adapter/outbound/mieru.go",
+    "before": "func (dr mieruDNSResolver) LookupIP(ctx context.Context, network, host string) (_ []net.IP, err error) {\n\tip, err := resolveIPWithResolver(ctx, host, dr.prefer, resolver.ProxyServerHostResolver)\n\tif err != nil {",
+    "after": "func (dr mieruDNSResolver) LookupIP(ctx context.Context, network, host string) (_ []net.IP, err error) {\n\tip, err := resolveIPWithResolver(ctx, host, dr.prefer, resolver.ProxyServerHostResolver.Load())\n\tif err != nil {"
+  },
+  {
+    "file": "adapter/outbound/base.go",
+    "before": "\tif !metadata.Resolved() {\n\t\tip, err := resolveIPWithResolver(ctx, metadata.Host, b.prefer, resolver.DefaultResolver)\n\t\tif err != nil {",
+    "after": "\tif !metadata.Resolved() {\n\t\tip, err := resolveIPWithResolver(ctx, metadata.Host, b.prefer, resolver.DefaultResolver.Load())\n\t\tif err != nil {"
+  },
+  {
+    "file": "adapter/outbound/easytier.go",
+    "before": "\t}\n\tips, err := resolver.LookupIPv4WithResolver(ctx, host, resolver.ProxyServerHostResolver)\n\tif err != nil {",
+    "after": "\t}\n\tips, err := resolver.LookupIPv4WithResolver(ctx, host, resolver.ProxyServerHostResolver.Load())\n\tif err != nil {"
+  },
+  {
+    "file": "adapter/outbound/direct.go",
+    "before": "\topts := d.DialOptions()\n\topts = append(opts, dialer.WithResolver(resolver.DirectHostResolver))\n\tc, err := dialer.DialContext(ctx, \"tcp\", metadata.RemoteAddress(), opts...)",
+    "after": "\topts := d.DialOptions()\n\topts = append(opts, dialer.WithResolver(resolver.DirectHostResolver.Load()))\n\tc, err := dialer.DialContext(ctx, \"tcp\", metadata.RemoteAddress(), opts...)"
+  },
+  {
+    "file": "adapter/outbound/direct.go",
+    "before": "func (d *Direct) ResolveUDP(ctx context.Context, metadata *C.Metadata) error {\n\tif (!metadata.Resolved() || resolver.DirectHostResolver != resolver.DefaultResolver) && metadata.Host != \"\" {\n\t\tip, err := resolveIPWithResolver(ctx, metadata.Host, d.prefer, resolver.DirectHostResolver)",
+    "after": "func (d *Direct) ResolveUDP(ctx context.Context, metadata *C.Metadata) error {\n\tif (!metadata.Resolved() || resolver.DirectHostResolver.Load() != resolver.DefaultResolver.Load()) && metadata.Host != \"\" {\n\t\tip, err := resolveIPWithResolver(ctx, metadata.Host, d.prefer, resolver.DirectHostResolver)"
+  },
+  {
+    "file": "adapter/outbound/direct.go",
+    "before": "\tif (!metadata.Resolved() || resolver.DirectHostResolver.Load() != resolver.DefaultResolver.Load()) && metadata.Host != \"\" {\n\t\tip, err := resolveIPWithResolver(ctx, metadata.Host, d.prefer, resolver.DirectHostResolver)\n\t\tif err != nil {",
+    "after": "\tif (!metadata.Resolved() || resolver.DirectHostResolver.Load() != resolver.DefaultResolver.Load()) && metadata.Host != \"\" {\n\t\tip, err := resolveIPWithResolver(ctx, metadata.Host, d.prefer, resolver.DirectHostResolver.Load())\n\t\tif err != nil {"
+  },
+  {
+    "file": "tunnel/tunnel.go",
+    "before": "\t\t\t\tmetadata.DNSMode = C.DNSFakeIP\n\t\t\t} else if node, ok := resolver.DefaultHosts.Search(host, false); ok {\n\t\t\t\t// redir-host should lookup the hosts",
+    "after": "\t\t\t\tmetadata.DNSMode = C.DNSFakeIP\n\t\t\t} else if node, ok := resolver.DefaultHosts.Load().Search(host, false); ok {\n\t\t\t\t// redir-host should lookup the hosts"
+  },
+  {
+    "file": "tunnel/tunnel.go",
+    "before": "\t\t}\n\t} else if node, ok := resolver.DefaultHosts.Search(metadata.Host, true); ok {\n\t\t// try use domain mapping",
+    "after": "\t\t}\n\t} else if node, ok := resolver.DefaultHosts.Load().Search(metadata.Host, true); ok {\n\t\t// try use domain mapping"
+  },
+  {
+    "file": "tunnel/tunnel.go",
+    "before": "\n\tif node, ok := resolver.DefaultHosts.Search(metadata.Host, false); ok {\n\t\tmetadata.DstIP, _ = node.RandIP()",
+    "after": "\n\tif node, ok := resolver.DefaultHosts.Load().Search(metadata.Host, false); ok {\n\t\tmetadata.DstIP, _ = node.RandIP()"
+  },
+  {
+    "file": "tunnel/tunnel.go",
+    "before": "\tif len(metadata.Host) > 0 {\n\t\tif node, ok := resolver.DefaultHosts.Search(metadata.Host, false); ok {\n\t\t\tif dstIp, _ := node.RandIP(); !resolver.IsFakeIP(dstIp) {",
+    "after": "\tif len(metadata.Host) > 0 {\n\t\tif node, ok := resolver.DefaultHosts.Load().Search(metadata.Host, false); ok {\n\t\t\tif dstIp, _ := node.RandIP(); !resolver.IsFakeIP(dstIp) {"
+  },
+  {
+    "file": "dns/system.go",
+    "before": "\tr.main = []dnsClient{c}\n\tresolver.SystemResolver = r\n}",
+    "after": "\tr.main = []dnsClient{c}\n\tresolver.SystemResolver.Store(r)\n}"
+  },
+  {
+    "file": "dns/patch_linux.go",
+    "before": "func FlushCacheWithDefaultResolver() {\n\tif r := resolver.DefaultResolver; r != nil {\n\t\tr.ClearCache()",
+    "after": "func FlushCacheWithDefaultResolver() {\n\tif r := resolver.DefaultResolver.Load(); r != nil {\n\t\tr.ClearCache()"
+  },
+  {
+    "file": "dns/patch_linux.go",
+    "before": "\t}\n\tif r := resolver.SystemResolver; r != nil {\n\t\tr.ClearCache()",
+    "after": "\t}\n\tif r := resolver.SystemResolver.Load(); r != nil {\n\t\tr.ClearCache()"
+  },
+  {
+    "file": "dns/middleware.go",
+    "before": "\t\t\t}\n\t\t\trecord, ok := resolver.DefaultHosts.Search(host, q.Qtype != D.TypeA && q.Qtype != D.TypeAAAA)\n\t\t\tif !ok {",
+    "after": "\t\t\t}\n\t\t\trecord, ok := resolver.DefaultHosts.Load().Search(host, q.Qtype != D.TypeA && q.Qtype != D.TypeAAAA)\n\t\t\tif !ok {"
+  },
+  {
+    "file": "hub/route/dns.go",
+    "before": "func queryDNS(w http.ResponseWriter, r *http.Request) {\n\tif resolver.DefaultResolver == nil {\n\t\trender.Status(r, http.StatusInternalServerError)",
+    "after": "func queryDNS(w http.ResponseWriter, r *http.Request) {\n\tif resolver.DefaultResolver.Load() == nil {\n\t\trender.Status(r, http.StatusInternalServerError)"
+  },
+  {
+    "file": "hub/route/dns.go",
+    "before": "\tmsg.SetQuestion(dns.Fqdn(name), qType)\n\tresp, err := resolver.DefaultResolver.ExchangeContext(ctx, &msg)\n\tif err != nil {",
+    "after": "\tmsg.SetQuestion(dns.Fqdn(name), qType)\n\tresp, err := resolver.DefaultResolver.Load().ExchangeContext(ctx, &msg)\n\tif err != nil {"
+  },
+  {
+    "file": "hub/route/doh.go",
+    "before": "func dohHandler(w http.ResponseWriter, r *http.Request) {\n\tif resolver.DefaultResolver == nil {\n\t\trender.Status(r, http.StatusInternalServerError)",
+    "after": "func dohHandler(w http.ResponseWriter, r *http.Request) {\n\tif resolver.DefaultResolver.Load() == nil {\n\t\trender.Status(r, http.StatusInternalServerError)"
+  },
+  {
+    "file": "hub/executor/executor.go",
+    "before": "\tif !c.Enable {\n\t\tresolver.DefaultResolver = nil\n\t\tresolver.DefaultHostMapper = nil",
+    "after": "\tif !c.Enable {\n\t\tresolver.DefaultResolver.Store(nil)\n\t\tresolver.DefaultHostMapper = nil"
+  },
+  {
+    "file": "hub/executor/executor.go",
+    "before": "\t\tresolver.DefaultResolver.Store(nil)\n\t\tresolver.DefaultHostMapper = nil\n\t\tresolver.DefaultService = nil",
+    "after": "\t\tresolver.DefaultResolver.Store(nil)\n\t\tresolver.DefaultHostMapper.Store(nil)\n\t\tresolver.DefaultService = nil"
+  },
+  {
+    "file": "hub/executor/executor.go",
+    "before": "\t\tresolver.DefaultHostMapper.Store(nil)\n\t\tresolver.DefaultService = nil\n\t\tresolver.ProxyServerHostResolver = nil",
+    "after": "\t\tresolver.DefaultHostMapper.Store(nil)\n\t\tresolver.DefaultService.Store(nil)\n\t\tresolver.ProxyServerHostResolver = nil"
+  },
+  {
+    "file": "hub/executor/executor.go",
+    "before": "\t\tresolver.DefaultService.Store(nil)\n\t\tresolver.ProxyServerHostResolver = nil\n\t\tresolver.DirectHostResolver = nil",
+    "after": "\t\tresolver.DefaultService.Store(nil)\n\t\tresolver.ProxyServerHostResolver.Store(nil)\n\t\tresolver.DirectHostResolver = nil"
+  },
+  {
+    "file": "hub/executor/executor.go",
+    "before": "\t\tresolver.ProxyServerHostResolver.Store(nil)\n\t\tresolver.DirectHostResolver = nil\n\t\tdns.ReCreateServer(\"\", nil, nil)",
+    "after": "\t\tresolver.ProxyServerHostResolver.Store(nil)\n\t\tresolver.DirectHostResolver.Store(nil)\n\t\tdns.ReCreateServer(\"\", nil, nil)"
+  },
+  {
+    "file": "hub/executor/executor.go",
+    "before": "\t// reuse cache of old host mapper\n\tif old := resolver.DefaultHostMapper; old != nil {\n\t\tm.PatchFrom(old.(*dns.ResolverEnhancer))",
+    "after": "\t// reuse cache of old host mapper\n\tif old := resolver.DefaultHostMapper.Load(); old != nil {\n\t\tm.PatchFrom(old.(*dns.ResolverEnhancer))"
+  },
+  {
+    "file": "hub/executor/executor.go",
+    "before": "\n\tresolver.DefaultResolver = r\n\tresolver.DefaultHostMapper = m",
+    "after": "\n\tresolver.DefaultResolver.Store(r)\n\tresolver.DefaultHostMapper = m"
+  },
+  {
+    "file": "hub/executor/executor.go",
+    "before": "\tresolver.DefaultResolver.Store(r)\n\tresolver.DefaultHostMapper = m\n\tresolver.DefaultService = s",
+    "after": "\tresolver.DefaultResolver.Store(r)\n\tresolver.DefaultHostMapper.Store(m)\n\tresolver.DefaultService = s"
+  },
+  {
+    "file": "hub/executor/executor.go",
+    "before": "\tresolver.DefaultHostMapper.Store(m)\n\tresolver.DefaultService = s\n\tresolver.UseSystemHosts = c.UseSystemHosts",
+    "after": "\tresolver.DefaultHostMapper.Store(m)\n\tresolver.DefaultService.Store(s)\n\tresolver.UseSystemHosts = c.UseSystemHosts"
+  },
+  {
+    "file": "hub/executor/executor.go",
+    "before": "\tresolver.DefaultService.Store(s)\n\tresolver.UseSystemHosts = c.UseSystemHosts\n",
+    "after": "\tresolver.DefaultService.Store(s)\n\tresolver.UseSystemHosts.Store(c.UseSystemHosts)\n"
+  },
+  {
+    "file": "hub/executor/executor.go",
+    "before": "\tif r.ProxyResolver.Invalid() {\n\t\tresolver.ProxyServerHostResolver = r.ProxyResolver\n\t} else {",
+    "after": "\tif r.ProxyResolver.Invalid() {\n\t\tresolver.ProxyServerHostResolver.Store(r.ProxyResolver)\n\t} else {"
+  },
+  {
+    "file": "hub/executor/executor.go",
+    "before": "\t} else {\n\t\tresolver.ProxyServerHostResolver = r.Resolver\n\t}",
+    "after": "\t} else {\n\t\tresolver.ProxyServerHostResolver.Store(r.Resolver)\n\t}"
+  },
+  {
+    "file": "hub/executor/executor.go",
+    "before": "\tif r.DirectResolver.Invalid() {\n\t\tresolver.DirectHostResolver = r.DirectResolver\n\t} else {",
+    "after": "\tif r.DirectResolver.Invalid() {\n\t\tresolver.DirectHostResolver.Store(r.DirectResolver)\n\t} else {"
+  },
+  {
+    "file": "hub/executor/executor.go",
+    "before": "\t} else {\n\t\tresolver.DirectHostResolver = r.Resolver\n\t}",
+    "after": "\t} else {\n\t\tresolver.DirectHostResolver.Store(r.Resolver)\n\t}"
+  },
+  {
+    "file": "hub/executor/executor.go",
+    "before": "func updateHosts(tree *trie.DomainTrie[resolver.HostValue]) {\n\tresolver.DefaultHosts = resolver.NewHosts(tree)\n}",
+    "after": "func updateHosts(tree *trie.DomainTrie[resolver.HostValue]) {\n\tresolver.DefaultHosts.Store(resolver.NewHosts(tree))\n}"
+  },
+  {
+    "file": "component/resolver/resolver.go",
+    "before": "DefaultResolver Resolver",
+    "after": "DefaultResolver atomic.TypedValue[Resolver]"
+  },
+  {
+    "file": "component/resolver/resolver.go",
+    "before": "ProxyServerHostResolver Resolver",
+    "after": "ProxyServerHostResolver atomic.TypedValue[Resolver]"
+  },
+  {
+    "file": "component/resolver/resolver.go",
+    "before": "DirectHostResolver Resolver",
+    "after": "DirectHostResolver atomic.TypedValue[Resolver]"
+  },
+  {
+    "file": "component/resolver/resolver.go",
+    "before": "SystemResolver Resolver",
+    "after": "SystemResolver atomic.TypedValue[Resolver]"
+  },
+  {
+    "file": "component/resolver/resolver.go",
+    "before": "DefaultHosts = NewHosts(trie.New[HostValue]())",
+    "after": "DefaultHosts = atomic.NewTypedValue(NewHosts(trie.New[HostValue]()))"
+  },
+  {
+    "file": "component/resolver/resolver.go",
+    "before": "func LookupIPv4WithResolver(ctx context.Context, host string, r Resolver) ([]netip.Addr, error) {\n\tif node, ok := DefaultHosts.Search(host, false); ok {\n\t\tif addrs := utils.Filter(node.IPs, func(ip netip.Addr) bool {",
+    "after": "func LookupIPv4WithResolver(ctx context.Context, host string, r Resolver) ([]netip.Addr, error) {\n\tif node, ok := DefaultHosts.Load().Search(host, false); ok {\n\t\tif addrs := utils.Filter(node.IPs, func(ip netip.Addr) bool {"
+  },
+  {
+    "file": "component/resolver/resolver.go",
+    "before": "\n\tif node, ok := DefaultHosts.Search(host, false); ok {\n\t\tif addrs := utils.Filter(node.IPs, func(ip netip.Addr) bool {",
+    "after": "\n\tif node, ok := DefaultHosts.Load().Search(host, false); ok {\n\t\tif addrs := utils.Filter(node.IPs, func(ip netip.Addr) bool {"
+  },
+  {
+    "file": "component/resolver/resolver.go",
+    "before": "func LookupIPWithResolver(ctx context.Context, host string, r Resolver) ([]netip.Addr, error) {\n\tif node, ok := DefaultHosts.Search(host, false); ok {\n\t\treturn node.IPs, nil",
+    "after": "func LookupIPWithResolver(ctx context.Context, host string, r Resolver) ([]netip.Addr, error) {\n\tif node, ok := DefaultHosts.Load().Search(host, false); ok {\n\t\treturn node.IPs, nil"
+  },
+  {
+    "file": "component/resolver/resolver.go",
+    "before": "\n\treturn SystemResolver.LookupIPv4(ctx, host)\n}",
+    "after": "\n\treturn SystemResolver.Load().LookupIPv4(ctx, host)\n}"
+  },
+  {
+    "file": "component/resolver/resolver.go",
+    "before": "func LookupIPv4(ctx context.Context, host string) ([]netip.Addr, error) {\n\treturn LookupIPv4WithResolver(ctx, host, DefaultResolver)\n}",
+    "after": "func LookupIPv4(ctx context.Context, host string) ([]netip.Addr, error) {\n\treturn LookupIPv4WithResolver(ctx, host, DefaultResolver.Load())\n}"
+  },
+  {
+    "file": "component/resolver/resolver.go",
+    "before": "func ResolveIPv4(ctx context.Context, host string) (netip.Addr, error) {\n\treturn ResolveIPv4WithResolver(ctx, host, DefaultResolver)\n}",
+    "after": "func ResolveIPv4(ctx context.Context, host string) (netip.Addr, error) {\n\treturn ResolveIPv4WithResolver(ctx, host, DefaultResolver.Load())\n}"
+  },
+  {
+    "file": "component/resolver/resolver.go",
+    "before": "\n\treturn SystemResolver.LookupIPv6(ctx, host)\n}",
+    "after": "\n\treturn SystemResolver.Load().LookupIPv6(ctx, host)\n}"
+  },
+  {
+    "file": "component/resolver/resolver.go",
+    "before": "func LookupIPv6(ctx context.Context, host string) ([]netip.Addr, error) {\n\treturn LookupIPv6WithResolver(ctx, host, DefaultResolver)\n}",
+    "after": "func LookupIPv6(ctx context.Context, host string) ([]netip.Addr, error) {\n\treturn LookupIPv6WithResolver(ctx, host, DefaultResolver.Load())\n}"
+  },
+  {
+    "file": "component/resolver/resolver.go",
+    "before": "func ResolveIPv6(ctx context.Context, host string) (netip.Addr, error) {\n\treturn ResolveIPv6WithResolver(ctx, host, DefaultResolver)\n}",
+    "after": "func ResolveIPv6(ctx context.Context, host string) (netip.Addr, error) {\n\treturn ResolveIPv6WithResolver(ctx, host, DefaultResolver.Load())\n}"
+  },
+  {
+    "file": "component/resolver/resolver.go",
+    "before": "\n\treturn SystemResolver.LookupIP(ctx, host)\n}",
+    "after": "\n\treturn SystemResolver.Load().LookupIP(ctx, host)\n}"
+  },
+  {
+    "file": "component/resolver/resolver.go",
+    "before": "func LookupIP(ctx context.Context, host string) ([]netip.Addr, error) {\n\treturn LookupIPWithResolver(ctx, host, DefaultResolver)\n}",
+    "after": "func LookupIP(ctx context.Context, host string) ([]netip.Addr, error) {\n\treturn LookupIPWithResolver(ctx, host, DefaultResolver.Load())\n}"
+  },
+  {
+    "file": "component/resolver/resolver.go",
+    "before": "func ResolveIP(ctx context.Context, host string) (netip.Addr, error) {\n\treturn ResolveIPWithResolver(ctx, host, DefaultResolver)\n}",
+    "after": "func ResolveIP(ctx context.Context, host string) (netip.Addr, error) {\n\treturn ResolveIPWithResolver(ctx, host, DefaultResolver.Load())\n}"
+  },
+  {
+    "file": "component/resolver/resolver.go",
+    "before": "func ResolveIPPrefer6(ctx context.Context, host string) (netip.Addr, error) {\n\treturn ResolveIPPrefer6WithResolver(ctx, host, DefaultResolver)\n}",
+    "after": "func ResolveIPPrefer6(ctx context.Context, host string) (netip.Addr, error) {\n\treturn ResolveIPPrefer6WithResolver(ctx, host, DefaultResolver.Load())\n}"
+  },
+  {
+    "file": "component/resolver/resolver.go",
+    "before": "\t}\n\treturn SystemResolver.ResolveECH(ctx, host)\n}",
+    "after": "\t}\n\treturn SystemResolver.Load().ResolveECH(ctx, host)\n}"
+  },
+  {
+    "file": "component/resolver/resolver.go",
+    "before": "func ResolveECH(ctx context.Context, host string) ([]byte, error) {\n\treturn ResolveECHWithResolver(ctx, host, DefaultResolver)\n}",
+    "after": "func ResolveECH(ctx context.Context, host string) ([]byte, error) {\n\treturn ResolveECHWithResolver(ctx, host, DefaultResolver.Load())\n}"
+  },
+  {
+    "file": "component/resolver/resolver.go",
+    "before": "func ClearCache() {\n\tif DefaultResolver != nil {\n\t\tgo DefaultResolver.ClearCache()",
+    "after": "func ClearCache() {\n\tif DefaultResolver.Load() != nil {\n\t\tgo DefaultResolver.ClearCache()"
+  },
+  {
+    "file": "component/resolver/resolver.go",
+    "before": "func ResetConnection() {\n\tif DefaultResolver != nil {\n\t\tgo DefaultResolver.ResetConnection()",
+    "after": "func ResetConnection() {\n\tif DefaultResolver.Load() != nil {\n\t\tgo DefaultResolver.ResetConnection()"
+  },
+  {
+    "file": "component/resolver/resolver.go",
+    "before": "\tif DefaultResolver.Load() != nil {\n\t\tgo DefaultResolver.ClearCache()\n\t}",
+    "after": "\tif DefaultResolver.Load() != nil {\n\t\tgo DefaultResolver.Load().ClearCache()\n\t}"
+  },
+  {
+    "file": "component/resolver/resolver.go",
+    "before": "\t}\n\tgo SystemResolver.ClearCache() // SystemResolver unneeded check nil\n}",
+    "after": "\t}\n\tgo SystemResolver.Load().ClearCache() // SystemResolver.Load() unneeded check nil\n}"
+  },
+  {
+    "file": "component/resolver/resolver.go",
+    "before": "\tif DefaultResolver.Load() != nil {\n\t\tgo DefaultResolver.ResetConnection()\n\t}",
+    "after": "\tif DefaultResolver.Load() != nil {\n\t\tgo DefaultResolver.Load().ResetConnection()\n\t}"
+  },
+  {
+    "file": "component/resolver/resolver.go",
+    "before": "\t}\n\tgo SystemResolver.ResetConnection() // SystemResolver unneeded check nil\n}",
+    "after": "\t}\n\tgo SystemResolver.Load().ResetConnection() // SystemResolver.Load() unneeded check nil\n}"
+  },
+  {
+    "file": "component/resolver/resolver.go",
+    "before": "if DefaultResolver.Load() != nil {\n\t\tgo DefaultResolver.Load().ClearCache()",
+    "after": "if r := DefaultResolver.Load(); r != nil {\n\t\tgo r.ClearCache()"
+  },
+  {
+    "file": "component/resolver/resolver.go",
+    "before": "if DefaultResolver.Load() != nil {\n\t\tgo DefaultResolver.Load().ResetConnection()",
+    "after": "if r := DefaultResolver.Load(); r != nil {\n\t\tgo r.ResetConnection()"
+  },
+  {
+    "file": "component/resolver/enhancer.go",
+    "before": "import \"net/netip\"",
+    "after": "import (\"net/netip\"\n \"github.com/metacubex/mihomo/common/atomic\")"
+  },
+  {
+    "file": "component/resolver/enhancer.go",
+    "before": "var DefaultHostMapper Enhancer",
+    "after": "var DefaultHostMapper atomic.TypedValue[Enhancer]"
+  },
+  {
+    "file": "component/resolver/enhancer.go",
+    "before": "func FakeIPEnabled() bool {\n\tif mapper := DefaultHostMapper; mapper != nil {\n\t\treturn mapper.FakeIPEnabled()",
+    "after": "func FakeIPEnabled() bool {\n\tif mapper := DefaultHostMapper.Load(); mapper != nil {\n\t\treturn mapper.FakeIPEnabled()"
+  },
+  {
+    "file": "component/resolver/enhancer.go",
+    "before": "func MappingEnabled() bool {\n\tif mapper := DefaultHostMapper; mapper != nil {\n\t\treturn mapper.MappingEnabled()",
+    "after": "func MappingEnabled() bool {\n\tif mapper := DefaultHostMapper.Load(); mapper != nil {\n\t\treturn mapper.MappingEnabled()"
+  },
+  {
+    "file": "component/resolver/enhancer.go",
+    "before": "func IsFakeIP(ip netip.Addr) bool {\n\tif mapper := DefaultHostMapper; mapper != nil {\n\t\treturn mapper.IsFakeIP(ip)",
+    "after": "func IsFakeIP(ip netip.Addr) bool {\n\tif mapper := DefaultHostMapper.Load(); mapper != nil {\n\t\treturn mapper.IsFakeIP(ip)"
+  },
+  {
+    "file": "component/resolver/enhancer.go",
+    "before": "func IsFakeBroadcastIP(ip netip.Addr) bool {\n\tif mapper := DefaultHostMapper; mapper != nil {\n\t\treturn mapper.IsFakeBroadcastIP(ip)",
+    "after": "func IsFakeBroadcastIP(ip netip.Addr) bool {\n\tif mapper := DefaultHostMapper.Load(); mapper != nil {\n\t\treturn mapper.IsFakeBroadcastIP(ip)"
+  },
+  {
+    "file": "component/resolver/enhancer.go",
+    "before": "func IsExistFakeIP(ip netip.Addr) bool {\n\tif mapper := DefaultHostMapper; mapper != nil {\n\t\treturn mapper.IsExistFakeIP(ip)",
+    "after": "func IsExistFakeIP(ip netip.Addr) bool {\n\tif mapper := DefaultHostMapper.Load(); mapper != nil {\n\t\treturn mapper.IsExistFakeIP(ip)"
+  },
+  {
+    "file": "component/resolver/enhancer.go",
+    "before": "func InsertHostByIP(ip netip.Addr, host string) {\n\tif mapper := DefaultHostMapper; mapper != nil {\n\t\tmapper.InsertHostByIP(ip, host)",
+    "after": "func InsertHostByIP(ip netip.Addr, host string) {\n\tif mapper := DefaultHostMapper.Load(); mapper != nil {\n\t\tmapper.InsertHostByIP(ip, host)"
+  },
+  {
+    "file": "component/resolver/enhancer.go",
+    "before": "func FindHostByIP(ip netip.Addr) (string, bool) {\n\tif mapper := DefaultHostMapper; mapper != nil {\n\t\treturn mapper.FindHostByIP(ip)",
+    "after": "func FindHostByIP(ip netip.Addr) (string, bool) {\n\tif mapper := DefaultHostMapper.Load(); mapper != nil {\n\t\treturn mapper.FindHostByIP(ip)"
+  },
+  {
+    "file": "component/resolver/enhancer.go",
+    "before": "func FlushFakeIP() error {\n\tif mapper := DefaultHostMapper; mapper != nil {\n\t\treturn mapper.FlushFakeIP()",
+    "after": "func FlushFakeIP() error {\n\tif mapper := DefaultHostMapper.Load(); mapper != nil {\n\t\treturn mapper.FlushFakeIP()"
+  },
+  {
+    "file": "component/resolver/enhancer.go",
+    "before": "\tif mapper := DefaultHostMapper; mapper != nil {",
+    "after": "\tif mapper := DefaultHostMapper.Load(); mapper != nil {"
+  },
+  {
+    "file": "component/resolver/service.go",
+    "before": "import (",
+    "after": "import (\n \"github.com/metacubex/mihomo/common/atomic\""
+  },
+  {
+    "file": "component/resolver/service.go",
+    "before": "var DefaultService Service",
+    "after": "var DefaultService atomic.TypedValue[Service]"
+  },
+  {
+    "file": "component/resolver/service.go",
+    "before": "server := DefaultService;",
+    "after": "server := DefaultService.Load();"
+  },
+  {
+    "file": "component/resolver/host.go",
+    "before": "import (",
+    "after": "import (\n \"github.com/metacubex/mihomo/common/atomic\""
+  },
+  {
+    "file": "component/resolver/host.go",
+    "before": "UseSystemHosts        bool",
+    "after": "UseSystemHosts atomic.Bool"
+  },
+  {
+    "file": "component/resolver/host.go",
+    "before": "&& UseSystemHosts {",
+    "after": "&& UseSystemHosts.Load() {"
+  },
+  {
+    "file": "component/resolver/host.go",
+    "before": "func (h *Hosts) Search",
+    "after": "func (h Hosts) Search"
+  },
+  {
+    "file": "hub/route/dns.go",
+    "before": "if resolver.DefaultResolver.Load() == nil {",
+    "after": "dnsResolver := resolver.DefaultResolver.Load()\n if dnsResolver == nil {"
+  },
+  {
+    "file": "hub/route/dns.go",
+    "before": "resolver.DefaultResolver.Load().ExchangeContext(ctx, &msg)",
+    "after": "dnsResolver.ExchangeContext(ctx, &msg)"
+  },
+  {
+    "file": "component/updater/patch.go",
+    "before": "\t\treturn fmt.Errorf(\"can't save GeoIP database file: %w\", err)\n\t}\n\treturn nil",
+    "after": "\t\treturn fmt.Errorf(\"can't save GeoIP database file: %w\", err)\n\t}\n\tgeodata.ClearGeoIPCache()\n\treturn nil"
+  },
+  {
+    "file": "component/updater/patch.go",
+    "before": "\t\treturn fmt.Errorf(\"can't save GeoSite database file: %w\", err)\n\t}\n\treturn nil",
+    "after": "\t\treturn fmt.Errorf(\"can't save GeoSite database file: %w\", err)\n\t}\n\tgeodata.ClearGeoSiteCache()\n\treturn nil"
+  },
+  {
+    "file": "component/easytier/platform_test.go",
+    "before": "oldProxy, oldDefault := resolver.ProxyServerHostResolver, net.DefaultResolver",
+    "after": "oldProxy, oldDefault := resolver.ProxyServerHostResolver.Load(), net.DefaultResolver"
+  },
+  {
+    "file": "component/easytier/platform_test.go",
+    "before": "resolver.ProxyServerHostResolver = oldProxy",
+    "after": "resolver.ProxyServerHostResolver.Store(oldProxy)"
+  },
+  {
+    "file": "component/easytier/platform_test.go",
+    "before": "resolver.ProxyServerHostResolver = &testDNSResolver{exchange:",
+    "after": "resolver.ProxyServerHostResolver.Store(&testDNSResolver{exchange:"
+  },
+  {
+    "file": "component/easytier/platform_test.go",
+    "before": "\t}}\n\n\ttxt, err :=",
+    "after": "\t}})\n\n\ttxt, err :="
   }
 ]

@@ -11,7 +11,8 @@ export class WebDavClient {
 
   private config: WebDavConfig;
   private logger: WebDavLogger;
-  private session: rcp.Session;
+  private sessions: Set<rcp.Session> = new Set<rcp.Session>();
+  private destroyed: boolean = false;
   private authHeaders: rcp.RequestHeaders;
   private static readonly DEFAULT_HEADERS: rcp.RequestHeaders = {
     'Accept': 'application/xml, text/xml',
@@ -27,8 +28,6 @@ export class WebDavClient {
     this.authHeaders = this.buildAuthHeaders();
     this.logger = WebDavLogger.getInstance();  // 获取全局实例
     this.logger.info('WebDavClient', 'WebDavClient初始化', { serverUrl: config.baseUrl });
-    this.session = rcp.createSession();
-    this.logger.info('WebDavClient', 'RCP Session已创建');
   }
 
   // ==================== WebDAV 基础操作方法 ====================
@@ -57,10 +56,8 @@ export class WebDavClient {
 
     const requestBody = buffer.from(propfindXml, 'utf-8').buffer as ArrayBuffer;
 
-    const request = new rcp.Request(url, 'PROPFIND', headers, requestBody);
-
     try {
-      const response = await this.session.fetch(request);
+      const response = await this._request('PROPFIND', '/', requestBody, headers);
       const statusCode = response.statusCode;
 
       // 根据状态码判断结果
@@ -287,6 +284,7 @@ export class WebDavClient {
     headers?: rcp.RequestHeaders,
     expectBinary: boolean = false
   ): Promise<WebDavResponse> {
+    if (this.destroyed) throw new Error('WebDAV 客户端已关闭');
     const url = this.buildUrl(path);
 
     // 合并 headers
@@ -366,18 +364,17 @@ export class WebDavClient {
       httpEventsHandler: customHttpEventsHandler
     };
 
+    let session: rcp.Session | undefined;
     try {
-      // 先销毁再创建
-      this.destroy()
-      this.session = rcp.createSession({
+      session = rcp.createSession({
         requestConfiguration: {
           tracing: tracingConfig
         }
       });
-      this.logger.info('WebDavClient._request', 'RCP Session已重新创建');
+      this.sessions.add(session);
       const request = new rcp.Request(url, method, finalHeaders, body);
       try {
-        const response = await this.session.fetch(request);
+        const response = await session.fetch(request);
         statusCode = response.statusCode;
         this.logger.info('WebDavClient._request', `响应状态码: ${statusCode}`, {
           statusCode,
@@ -426,6 +423,8 @@ export class WebDavClient {
         url
       });
       throw new Error(`rcp.Request失败，message: ${(error as Error).message}`)
+    } finally {
+      if (session) this.releaseSession(session);
     }
   }
 
@@ -475,9 +474,14 @@ export class WebDavClient {
    * 在客户端不再使用时应调用此方法
    */
   public destroy(): void {
-    if (this.session) {
-      this.session.close(); // 调用框架的销毁方法
-      this.logger.warn('WebDavClient', 'RCP Session已销毁');
+    this.destroyed = true;
+    for (const session of this.sessions) this.releaseSession(session);
+  }
+
+  private releaseSession(session: rcp.Session): void {
+    if (!this.sessions.delete(session)) return;
+    try { session.close(); } catch (e) {
+      this.logger.warn('WebDavClient', `关闭连接失败：${(e as Error).message}`);
     }
   }
 

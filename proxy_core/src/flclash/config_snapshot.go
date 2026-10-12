@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/metacubex/mihomo/adapter"
+	"github.com/metacubex/mihomo/adapter/outboundgroup"
 	"github.com/metacubex/mihomo/tunnel"
 )
 
@@ -48,8 +49,12 @@ func handleGetConfigSnapshot(path string) (bool, error) {
 	snapshot.Params.SelectedMap = make(map[string]string)
 	for name, proxy := range tunnel.ProxiesWithProviders() {
 		if p, ok := proxy.(*adapter.Proxy); ok {
-			if selector, ok := p.ProxyAdapter.(interface{ Now() string }); ok {
-				snapshot.Params.SelectedMap[name] = selector.Now()
+			switch group := p.ProxyAdapter.(type) {
+			case *outboundgroup.Selector:
+				snapshot.Params.SelectedMap[name] = group.Now()
+			case interface{ FixedSelection() string }:
+				// Automatic groups restore only a manual pin, never their current winner.
+				snapshot.Params.SelectedMap[name] = group.FixedSelection()
 			}
 		}
 	}

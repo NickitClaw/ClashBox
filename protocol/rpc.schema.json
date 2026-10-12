@@ -306,6 +306,17 @@
             "type": "string"
           },
           "optional": true
+        },
+        {
+          "name": "providerType",
+          "shape": {
+            "type": "string",
+            "enum": [
+              "Proxy",
+              "Rule"
+            ]
+          },
+          "optional": true
         }
       ],
       "result": {
@@ -338,6 +349,17 @@
           "name": "expectedPath",
           "shape": {
             "type": "string"
+          },
+          "optional": true
+        },
+        {
+          "name": "providerType",
+          "shape": {
+            "type": "string",
+            "enum": [
+              "Proxy",
+              "Rule"
+            ]
           },
           "optional": true
         }

@@ -928,7 +928,8 @@ function viewModelFixture(options = {}) {
     'proxy_core/src/main/ets/profile/ProfileStorage': { ProfileStorage: class {
       async transaction(action) { return action({ read: async () => options.profileSource }); }
     } },
-    'proxy_core': { ...clashConfigModel, ...snifferMigration, ProfileType: { File: 0, Url: 1 }, ProxySort: { Delay: 'Delay' }, SocketProxyService: class {}, SocketStubService: class {
+    '../common/entity/Constants': { convertTimeGapToMilliseconds: () => 60000 },
+    'proxy_core': { Profile: options.profileClass, ...clashConfigModel, ...snifferMigration, ProfileType: { File: 0, Url: 1 }, ProxySort: { Delay: 'Delay' }, SocketProxyService: class {}, SocketStubService: class {
       constructor(context, observer, allowVpn) { calls.push(['localCore', context.applicationInfo.name, allowVpn]); }
       async startService(id) { calls.push('startLocalCore'); if (options.localGate) await options.localGate.promise; }
       async lockVpn() {}
@@ -1414,12 +1415,14 @@ test('Backup restore applies the build core policy for both file and supplied ba
       'BuildProfile': { default: { DEBUG: debug } }, '../services/CoreMode': coreMode,
       'proxy_core': { ...clashConfigModel, ...snifferMigration },
       '../entity/utils': { getJsonArrayType: () => 'string' },
-      '../../entryability/ClashViewModel': { default: { addOrUpdateProfiles: async list => restored.push(list), getProfile: async id => ({ id }) } },
+      '../../entryability/ClashViewModel': { default: { addOrUpdateProfiles: async (list, publish) => { restored.push(list); await publish(); }, getProfile: async id => ({ id }) } },
       'xb_components': {
         Xb_FileUtils: { openFile: async () => 'backup.json', importDataByFile: async () => config },
-        Xb_PreferenceUtil: { put: async () => {} }, Xb_ToastUtil: { showToast() {}, restartApp() {} }
-      }
-    }, { AppStorage: { set: (k, v) => stored.set(k, v) }, $r: k => k, ...clock() });
+        Xb_PreferenceUtil: { get: async () => '[]', put: async () => {} }, Xb_ToastUtil: { showToast() {}, restartApp() {} }
+      },
+    './CardManageUtil': { cardManager: { getAppConfig: () => ({}), getClashConfig: () => ({}), setAppConfig() {}, setClashConfig() {} } },
+      '../../entryability/AppState': { AppConfig: class {}, UIConfig: class {} }
+    }, { AppStorage: { get: k => stored.get(k), set: (k, v) => !!stored.set(k, v) }, $r: k => k, ...clock() });
     await mod.default.restore(fileInput ? null : config); await flush();
     assert.equal(stored.get('appConfig').clashCore, debug ? 1 : 0);
     assert.equal(stored.get('appConfig').currentProfileId, 'profile');
@@ -1782,7 +1785,7 @@ test('Backup round-trip keeps profile IDs, selections and persisted metadata on 
 test('Failed backup restoration does not publish dangling selection or report success', async () => {
   const calls = [], time = clock();
   const { default: backup } = load('entry/src/main/ets/common/utils/BackupRestoreUtil.ets', {
-    '../../entryability/ClashViewModel': { default: { addOrUpdateProfiles: async () => { throw new Error('download failed'); } } },
+    '../../entryability/ClashViewModel': { default: { getProfile: async () => null, addOrUpdateProfiles: async () => { throw new Error('download failed'); } } },
     'BuildProfile': { default: { DEBUG: false } }, '../services/CoreMode': coreMode,
     'proxy_core': { ...clashConfigModel, ...snifferMigration }, '../entity/utils': { getJsonArrayType: () => 'string' },
     'xb_components': { Xb_ToastUtil: { showToast: m => calls.push(m.message) } }
@@ -2079,8 +2082,141 @@ test('Provider RPCs carry the originating profile path through asynchronous uplo
   });
   const service = new SocketProxyService(); service.context = { filesDir: '/files' };
   service.sendMessageRequest = async (method, args) => { sent.push(args); return ''; };
-  const provider = { name: 'nodes', path: '/providers/A/nodes.yaml' };
+  const provider = { name: 'nodes', path: '/providers/A/nodes.yaml', type: 'Rule' };
   await service.updateProvider(provider); await service.upLoadProvider(provider, 'document');
-  assert.deepEqual(Array.from(sent[0]), ['nodes', provider.path]);
-  assert.deepEqual(Array.from(sent[1]), ['nodes', '/files/provider-upload.tmp', provider.path]);
+  assert.deepEqual(Array.from(sent[0]), ['nodes', provider.path, 'Rule']);
+  assert.deepEqual(Array.from(sent[1]), ['nodes', '/files/provider-upload.tmp', provider.path, 'Rule']);
+});
+
+
+test('Reset waits for pending imports and rejects new writers until all imported files and rows are erased', async () => {
+  for (const type of ['url', 'file']) {
+    const f = profileFixture({ passthrough: true });
+    const storage = new Map([['appConfig', {}]]), vm = viewModelFixture({ storage, profileClass: f.create('prototype').constructor });
+    vm.service.context = { filesDir: '/files', tempDir: '/temp' };
+    const rows = new Map(), entered = deferred(), gate = deferred();
+    vm.service.profileRepo.addOrUpdate = async p => { rows.set(p.id, p); return 0; };
+    vm.service.profileRepo.ClearAll = async () => { for (const p of rows.values()) await p.delete(); rows.clear(); };
+    vm.service.socketProxy.downloadConfig = async (_, __, path) => {
+      entered.resolve(); await gate.promise; f.files.set(path, 'rules: [MATCH,DIRECT]'); return '{}';
+    };
+    vm.service.socketProxy.vailConfig = async () => { if (type === 'file') { entered.resolve(); await gate.promise; } return ''; };
+    f.files.set('/import.yaml', 'rules: [MATCH,DIRECT]');
+    const importing = type === 'url'
+      ? vm.service.addOrUpdateProfileByUrl({configUrl: 'https://example.invalid/sub', configName: 'A'}, null)
+      : vm.service.addOrUpdateProfileByFile('A', '/import.yaml', null);
+    await entered.promise;
+    let done = false;
+    const resetting = vm.service.resetProfiles(async () => {}).then(() => { done = true; });
+    await assert.rejects(vm.service.addOrUpdateProfileByFile('B', '/import.yaml', null), /清理/);
+    await assert.rejects(vm.service.addOrUpdateProfileByUrl({configUrl: 'https://example.invalid/sub'}, null), /清理/);
+    await flush(); assert.equal(done, false);
+    gate.resolve(); await importing; await resetting;
+    assert.equal(rows.size, 0);
+    assert.equal([...f.files.keys()].some(p => p.endsWith('/config.yaml')), false);
+    f.clean();
+  }
+});
+
+test('Restore compensates files, rows, settings and card selection on preference, publication or DB commit failure', async () => {
+  for (const failure of ['preferences', 'publication', 'database', 'success']) {
+    const files = profileFixture({ passthrough: true }), original = files.create('A'); original.url = 'https://example.invalid/sub';
+    files.files.set(files.configPath('A'), 'original bytes');
+    const helper = load('proxy_core/src/main/ets/profile/ProfileBackup.ets', { '../Profile': { Profile: original.constructor, ProfileType: { File: 0, Url: 1 } } });
+    const restorer = load('proxy_core/src/main/ets/profile/ProfileRestore.ets', { './ProfileStorage': files.storage });
+    const storage = new Map([['appConfig', {currentProfileId: 'old'}], ['uiConfig', {old: true}], ['clashConfig', {old: true}]]);
+    const vm = viewModelFixture({storage, profileBackup: helper, profileRestore: restorer}); vm.service.context = original.context;
+    vm.service.socketProxy.vailConfig = async () => '';
+    files.network.response.result = 'new bytes';
+    let row = 'original row', sort = 'original sort', cardApp = {currentProfileId:'old'}, cardClash = {old: true}, injected = false;
+    const messages = [], time = clock();
+    vm.service.profileRepo.restoreBatch = async (_, replace) => {
+      const previous = row;
+      try { row = 'new row'; await replace(); if (failure === 'database') throw Error('DB commit failure'); }
+      catch (e) { row = previous; throw e; }
+    };
+    const {default: backup} = load('entry/src/main/ets/common/utils/BackupRestoreUtil.ets', {
+      'proxy_core': {migrateSnifferConfig: x => x},
+      '../../entryability/ClashViewModel': {default: vm.service},
+      '../entity/utils': {getJsonArrayType: () => ''}, '../services/CoreMode': coreMode, 'BuildProfile': {default: {DEBUG: true}},
+      './CardManageUtil': {cardManager: {getAppConfig: () => cardApp, getClashConfig: () => cardClash,
+        setAppConfig: v => {cardApp = v;}, setClashConfig: v => {cardClash = v;}}},
+      'xb_components': {Xb_PreferenceUtil: {get: async () => sort, put: async (_, value) => {
+        sort = value; if (failure === 'preferences' && !injected) {injected = true; throw Error('flush failure');}
+      }}, Xb_ToastUtil: {showToast: m => messages.push(m.message), restartApp() {}}}
+    }, {AppStorage: {get: k => storage.get(k), set: (k, v) => {
+      if (failure === 'publication' && k === 'appConfig' && !injected) {injected = true; return false;}
+      storage.set(k,v); return true;
+    }}, $r: k => k, ...time});
+    const ok = await backup.restore({appConfig: {currentProfileId:'A'}, uiConfig:{restored:true}, clashConfig:{restored:true},
+      configSort:'new sort', configList:[helper.backupProfile(original)]});
+    assert.equal(ok, failure === 'success');
+    assert.equal(files.files.get(files.configPath('A')), ok ? 'new bytes' : 'original bytes');
+    assert.equal(row, ok ? 'new row' : 'original row'); assert.equal(sort, ok ? 'new sort' : 'original sort');
+    assert.equal(storage.get('appConfig').currentProfileId, ok ? 'A' : 'old');
+    assert.equal(cardApp.currentProfileId, ok ? 'A' : 'old'); assert.equal(cardClash.old, ok ? undefined : true);
+    assert.equal(messages.includes('app.string.import_success'), ok); assert.equal(time.timeouts.size, ok ? 1 : 0);
+    files.clean();
+  }
+});
+
+test('Backup reports success only for completed exports and 2xx uploads, and coalesces duplicate clicks', async () => {
+  const source = fs.readFileSync(path.join(root, 'entry/src/main/ets/components/Settings/Backup.ets'), 'utf8');
+  const methods = source.slice(source.indexOf('  async onBackupData()'), source.indexOf('  /**\n   * 从本地备份')) +
+    source.slice(source.indexOf('  async cloudBackup('), source.indexOf('  async cloudRestore()'));
+  for (const scenario of ['empty', 'local', 'directory-error', 'network', '503', 'upload', 'existing']) {
+    const messages = [], entered = deferred(), gate = deferred(); let exports = 0, uploads = 0;
+    const { Page } = load('BackupPageTest.ts', {}, {
+      BackupRestoreUtil: { backup: async () => { exports++; entered.resolve(); await gate.promise; return scenario === 'empty' ? '' : '/backup.json'; } },
+      Xb_ToastUtil: { showToast: t => messages.push(t.message) }, $r: x => x
+    }, `export class Page { backingUp = false; ${methods} }`);
+    const page = new Page(); page.uiConfig = { isShowCloudBackupConfig: scenario !== 'local' }; page.isLogin = true;
+    page.webdavManager = {
+      createDirectory: async () => ({statusCode: scenario === 'directory-error' ? 403 : scenario === 'existing' ? 405 : 201}),
+      upload: async (_, path) => { uploads++; assert.equal(path, '/backup.json'); if (scenario === 'network') throw Error('disconnected'); return {statusCode:scenario === '503' ? 503 : 201}; }
+    };
+    const work = page.onBackupData(); await entered.promise; await page.onBackupData(); assert.equal(exports,1);
+    gate.resolve(); await work;
+    assert.equal(page.backingUp,false);
+    const success = ['local','upload','existing'].includes(scenario);
+    assert.equal(messages.includes('app.string.export_success'), success);
+    assert.equal(messages.length, scenario === 'empty' ? 0 : 1);
+    if (['empty','local','directory-error'].includes(scenario)) assert.equal(uploads, 0);
+  }
+});
+
+test('WebDAV concurrent uploads, downloads and connection tests own sessions and close them exactly once', async () => {
+  const sessions = [];
+  const { WebDavClient } = load('entry/src/main/ets/common/utils/webdav/client.ts', {
+    '@kit.ArkTS': { util: {...util, TextDecoder: class { static create() {return {decodeWithStream: bytes => new TextDecoder().decode(bytes)};} }},
+      buffer: {from: (s, enc) => Buffer.from(s, enc)} },
+    './logger': {WebDavLogger: {getInstance: () => quiet}},
+    '@kit.RemoteCommunicationKit': {rcp: {
+      Request: class {constructor(url, method, headers, body) { Object.assign(this,{url,method,headers,body}); }},
+      createSession: options => {
+        const s = {closed:0, fetch: request => new Promise((resolve,reject) => {s.request=request;s.reject=reject;
+          s.resolve = (body, statusCode=200) => {
+            const events = options.requestConfiguration.tracing.httpEventsHandler;
+            events.onDataReceive(new TextEncoder().encode(body).buffer); events.onHeaderReceive({'x-request':body});
+            resolve({statusCode,headers:{}});
+          };
+        }), close: () => {s.closed++; s.reject?.(Error('session closed'));}};
+        sessions.push(s); return s;
+      }
+    }}
+  });
+  const client = new WebDavClient({baseUrl:'https://example.invalid/dav/'});
+  const get = client.get('/a'), put = client.put('/b',new ArrayBuffer(0)), check = client.testConnection();
+  assert.equal(sessions.length,3); assert.ok(sessions.every(s => s.closed===0));
+  sessions[1].resolve('uploaded',201); sessions[2].resolve('dav',207); sessions[0].resolve('downloaded');
+  const [download, upload, connection] = await Promise.all([get,put,check]);
+  assert.equal(new TextDecoder().decode(download.data),'downloaded'); assert.equal(upload.data,'uploaded');
+  assert.equal(download.headers['x-request'],'downloaded'); assert.equal(connection.success,true);
+  assert.ok(sessions.every(s => s.closed===1));
+  const failed = client.get('/error'); sessions[3].reject(Error('network failure'));
+  await assert.rejects(failed,/network failure/); assert.equal(sessions[3].closed,1);
+  const cancelled = [client.get('/c'),client.get('/d')];
+  const settled = Promise.allSettled(cancelled); client.destroy(); client.destroy();
+  assert.ok((await settled).every(r=>r.status==='rejected')); assert.ok(sessions.every(s=>s.closed===1));
+  await assert.rejects(client.get('/after-close'),/已关闭/); assert.equal(sessions.length,6);
 });

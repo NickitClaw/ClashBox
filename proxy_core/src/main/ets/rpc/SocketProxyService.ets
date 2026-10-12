@@ -272,14 +272,14 @@ export class SocketProxyService implements IClashManager {
     return result as string
   }
   async updateProvider(provider: Provider): Promise<string> {
-    return  (await this.sendMessageRequest(ClashRpcType.updateProvider,[provider.name, provider.path ?? ''])) as string
+    return  (await this.sendMessageRequest(ClashRpcType.updateProvider,[provider.name, provider.path ?? '', provider.type])) as string
   }
   async upLoadProvider(provider: Provider, uri: string): Promise<string> {
     if (!this.context) throw new Error('Provider 上传服务尚未初始化');
     const temp = `${this.context.filesDir}/provider-${generateUUID()}.tmp`;
     try {
       await fs.copy(uri, fileUri.getUriFromPath(temp));
-      return await this.sendMessageRequest(ClashRpcType.uploadProvider, [provider.name, temp, provider.path ?? '']) as string;
+      return await this.sendMessageRequest(ClashRpcType.uploadProvider, [provider.name, temp, provider.path ?? '', provider.type]) as string;
     } finally {
       try { await fs.unlink(temp); } catch (_) {}
     }

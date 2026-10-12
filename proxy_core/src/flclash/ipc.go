@@ -214,17 +214,25 @@ func handleRemoteRequest(request RpcRequest, fn func(RpcResult)) {
 		if len(request.Params) > 1 {
 			expectedPath, _ = request.Params[1].(string)
 		}
+		providerType := ""
+		if len(request.Params) > 2 {
+			providerType, _ = request.Params[2].(string)
+		}
 		handleUpdateExternalProvider(name, func(value string) {
 			ret.Result = value
 			log.Println("ipc_go", "UploadProvider: "+value)
 			fn(ret)
-		}, expectedPath)
+		}, expectedPath, providerType)
 	case UploadProvider:
 		provider, _ := request.Params[0].(string)
 		pathUri, _ := request.Params[1].(string)
 		expectedPath := ""
 		if len(request.Params) > 2 {
 			expectedPath, _ = request.Params[2].(string)
+		}
+		providerType := ""
+		if len(request.Params) > 3 {
+			providerType, _ = request.Params[3].(string)
 		}
 		data, err := os.ReadFile(pathUri)
 		if err != nil {
@@ -236,7 +244,7 @@ func handleRemoteRequest(request RpcRequest, fn func(RpcResult)) {
 		handleSideLoadExternalProvider(provider, data, func(value string) {
 			ret.Result = value
 			fn(ret)
-		}, expectedPath)
+		}, expectedPath, providerType)
 	case ChangeProxy:
 		group, _ := request.Params[0].(string)
 		proxy, _ := request.Params[1].(string)

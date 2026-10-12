@@ -6,6 +6,7 @@ import ClashViewModel from "../../entryability/ClashViewModel";
 import { filterStringsByBooleans } from "../entity/Constants";
 import { getJsonArrayType } from "../entity/utils";
 import BuildProfile from 'BuildProfile';
+import { cardManager } from './CardManageUtil';
 import { resolveCoreMode } from '../services/CoreMode';
 
 
@@ -58,23 +59,52 @@ class BackupRestoreUtil {
       }
       if (!config || !Array.isArray(config.configList)) throw new Error('备份配置解析失败');
       if (!config.appConfig || !config.uiConfig || !config.clashConfig) throw new Error('备份缺少应用设置');
+      config = JSON.parse(JSON.stringify(config)) as BackupConfig;
       const restoredClash = migrateSnifferConfig(config.clashConfig);
       config.appConfig.clashCore = resolveCoreMode(config.appConfig.clashCore, BuildProfile.DEBUG);
       if (getJsonArrayType(config.uiConfig.isShowHomeCard) === 'boolean') {
         config.uiConfig.isShowHomeCard = filterStringsByBooleans(config.uiConfig.isShowHomeCard, 'string') as string;
       }
-      // Do not publish selection or report success until every profile has been restored.
-      await ClashViewModel.addOrUpdateProfiles(config.configList);
       const app = config.appConfig;
-      if (app.currentProfileId && !await ClashViewModel.getProfile(app.currentProfileId)) {
+      if (app.currentProfileId && !config.configList.some((p: ProfileBackup) => p.id === app.currentProfileId) &&
+        !await ClashViewModel.getProfile(app.currentProfileId)) {
         app.currentProfileId = '';
         app.currentProfileName = undefined;
         app.currentProxyName = undefined;
       }
-      await Xb_PreferenceUtil.put('config_sort', config.configSort ?? '[]');
-      AppStorage.set('uiConfig', config.uiConfig);
-      AppStorage.set('clashConfig', restoredClash);
-      AppStorage.set('appConfig', app);
+      const restored = config;
+      let oldApp: AppConfig;
+      let oldUi: UIConfig;
+      let oldClash: ClashConfig;
+      let oldSort: string;
+      let oldCardApp: AppConfig;
+      let oldCardClash: ClashConfig;
+      let captured = false;
+      await ClashViewModel.addOrUpdateProfiles(config.configList, async () => {
+        oldApp = AppStorage.get<AppConfig>('appConfig') ?? new AppConfig();
+        oldUi = AppStorage.get<UIConfig>('uiConfig') ?? new UIConfig();
+        oldClash = AppStorage.get<ClashConfig>('clashConfig') ?? new ClashConfig();
+        oldCardApp = cardManager.getAppConfig() ?? oldApp;
+        oldCardClash = cardManager.getClashConfig() ?? oldClash;
+        oldSort = await Xb_PreferenceUtil.get('config_sort', '[]');
+        captured = true;
+        await Xb_PreferenceUtil.put('config_sort', restored.configSort ?? '[]');
+        cardManager.setAppConfig(app);
+        cardManager.setClashConfig(restoredClash);
+        if (!AppStorage.set('uiConfig', restored.uiConfig) || !AppStorage.set('clashConfig', restoredClash) ||
+          !AppStorage.set('appConfig', app)) throw new Error('应用设置写入失败');
+      }, async () => {
+        if (!captured) return;
+        // Try every compensation even if persistent storage remains unavailable.
+        let failed = false;
+        try { await Xb_PreferenceUtil.put('config_sort', oldSort); } catch (_) { failed = true; }
+        try { cardManager.setAppConfig(oldCardApp); } catch (_) { failed = true; }
+        try { cardManager.setClashConfig(oldCardClash); } catch (_) { failed = true; }
+        if (!AppStorage.set('uiConfig', oldUi)) failed = true;
+        if (!AppStorage.set('clashConfig', oldClash)) failed = true;
+        if (!AppStorage.set('appConfig', oldApp)) failed = true;
+        if (failed) throw new Error('恢复失败且部分设置回滚失败，请保留原备份并重新恢复');
+      });
       Xb_ToastUtil.showToast({ message: $r('app.string.import_success') });
       setTimeout(() => { Xb_ToastUtil.restartApp(); }, 2000);
       return true;

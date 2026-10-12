@@ -17,6 +17,7 @@ import { Xb_AnimationStyle } from "xb_components"
 @Component
 struct Backup {
 
+  private backingUp: boolean = false
   @State rawFiles: FileInfo[] = []
   // 主题色
   @Consume('icon_emphasize') icon_emphasize: ResourceColor
@@ -222,23 +223,26 @@ struct Backup {
    * 备份应用数据
    */
   async onBackupData() {
-    hilog.info(0xFF00, "BackupTag", "开始备份应用数据")
-    // 本地备份
-    const file_path = await BackupRestoreUtil.backup()
-    console.log(`Backup 备份文件的缓存为：${file_path}`)
-    if (this.uiConfig.isShowCloudBackupConfig && this.isLogin) {
-      // 云备份
-      try {
-        const value = await this.webdavManager?.createDirectory('/ClashBox')
-        if (value)
-        console.log(`Backup 创建状态: ${value.statusCode === 201}`)
-      } catch (err) {
-        console.error(`Backup 创建失败 name: ${err.name} message: ${err.message}`)
+    if (this.backingUp) return;
+    this.backingUp = true;
+    try {
+      const path = await BackupRestoreUtil.backup();
+      // Export failure/cancellation produces no file; never open the upload picker.
+      if (!path) return;
+      if (this.uiConfig.isShowCloudBackupConfig && this.isLogin) {
+        if (!this.webdavManager) throw new Error('云备份尚未连接');
+        const directory = await this.webdavManager.createDirectory('/ClashBox');
+        // MKCOL returns 405 for an existing collection; PUT still must succeed.
+        if (directory.statusCode !== 405 && (directory.statusCode < 200 || directory.statusCode >= 300)) {
+          throw new Error(`创建备份目录失败：HTTP ${directory.statusCode}`);
+        }
+        await this.cloudBackup(path);
       }
-      await this.cloudBackup(file_path)
-      Xb_ToastUtil.showToast({ message: $r('app.string.export_success') })
-    } else {
-      Xb_ToastUtil.showToast({ message: $r('app.string.export_success') })
+      Xb_ToastUtil.showToast({ message: $r('app.string.export_success') });
+    } catch (err) {
+      Xb_ToastUtil.showToast({ message: `备份失败：${(err as Error).message}`, duration: 3000 });
+    } finally {
+      this.backingUp = false;
     }
   }
 
@@ -250,17 +254,11 @@ struct Backup {
     BackupRestoreUtil.restore()
   }
 
-  async cloudBackup(file_path: string) {
-    try {
-      if (this.webdavManager) {
-        console.log(`待备份文件的路径是: ${file_path}`)
-        const remotePath = '/ClashBox/'
-        const value = await this.webdavManager.upload(remotePath, file_path)
-        console.log(`云备份状态：${value.statusCode}`)
-      }
-    } catch (err) {
-      Xb_ToastUtil.showToast({ message: `云备份失败 name: ${err.name} message: ${err.message}`, duration: 3000 })
-      console.error(`WebDav 备份失败 name: ${err.name} message: ${err.message}`)
+  async cloudBackup(file_path: string): Promise<void> {
+    if (!file_path || !this.webdavManager) throw new Error('备份文件或云备份连接不可用');
+    const response = await this.webdavManager.upload('/ClashBox/', file_path);
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw new Error(`上传失败：HTTP ${response.statusCode}`);
     }
   }
 
